@@ -1,0 +1,5 @@
+# Dependencies live in pyproject.toml — this file just installs the project
+# itself (editable) plus the test extras, so the old
+#   pip install -r requirements.txt
+# still does the right thing and also puts the `trafix` commands on PATH.
+-e .[dev]

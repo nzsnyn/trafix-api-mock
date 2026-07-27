@@ -1,0 +1,21 @@
+# Parking tariff. All amounts in IDR.
+
+currency: IDR
+
+# Parking free if the vehicle leaves within this many minutes.
+grace_minutes: 10
+
+# Charged once, covers the first hour.
+first_hour: 3000
+
+# Charged for every hour (or part of an hour) after the first.
+next_hour: 2000
+
+# Maximum charge per 24 hours of stay. null disables the cap.
+daily_max: 25000
+
+# Flat charge when the ticket cannot be produced at the exit.
+lost_ticket: 50000
+
+# Round the final amount up to the nearest multiple of this. 0 disables.
+rounding: 500

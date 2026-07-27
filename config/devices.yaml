@@ -1,0 +1,193 @@
+# Device addressing for the Trafix LPR parking system.
+#
+# Switch with TRAFIX_ENV (default below).
+#   sim  -> everything on localhost, distinct ports, no hardware needed
+#   site -> the real addresses recorded in flow.md §3
+#
+# Gate "1" is the entry lane, gate "2" the exit lane.
+
+default_env: sim
+
+environments:
+
+  sim:
+    database_url: ${TRAFIX_DB:-postgresql+psycopg://trafix:trafix@127.0.0.1:5433/parkways}
+
+    broker:
+      host: 127.0.0.1
+      port: 1883
+      keepalive: 30
+      username: ${MQTT_USER:-}
+      password: ${MQTT_PASS:-}
+      client_id_prefix: trafix
+
+    api:
+      host: 127.0.0.1
+      port: 8000
+      base_url: http://127.0.0.1:8000
+
+    controllers:
+      gate_controller_in:
+        gate: "1"
+        host: 127.0.0.1
+        serial_no: "441D6491AF17"     # the real board's serial, from the capture
+      gate_controller_out:
+        gate: "2"
+        host: 127.0.0.1
+        serial_no: "441D6491AF18"     # invented: no exit controller exists on site
+
+    lpr:
+      lpr_in:
+        gate: "1"
+        host: 127.0.0.1
+        port: 8090
+        base_url: http://127.0.0.1:8090
+        public_url: http://127.0.0.1:8090
+        serves_http: true
+      lpr_out:
+        gate: "2"
+        host: 127.0.0.1
+        port: 8091
+        base_url: http://127.0.0.1:8091
+        public_url: http://127.0.0.1:8091
+        # On site this is false — .149 accepts no TCP connections at all
+        # (flow.md §7.2). Left true here so the simulator exercises the
+        # working path; set false to reproduce the production failure.
+        serves_http: true
+
+    cameras:
+      cam_in:
+        host: 127.0.0.1:8148
+        snapshot_path: /cgi-bin/snapshot.cgi
+      cam_out:
+        host: 127.0.0.1:8150
+        snapshot_path: /cgi-bin/snapshot.cgi
+
+  # Isolated ports and database for the automated tests.
+  e2e:
+    database_url: ${TRAFIX_DB_E2E:-postgresql+psycopg://trafix:trafix@127.0.0.1:5433/parkways_e2e}
+    broker:
+      host: 127.0.0.1
+      port: 1883
+      keepalive: 30
+      client_id_prefix: trafix-e2e
+    api:
+      host: 127.0.0.1
+      port: 8900
+      base_url: http://127.0.0.1:8900
+    controllers:
+      gate_controller_in:
+        gate: "1"
+        host: 127.0.0.1
+        serial_no: "441D6491AF17"
+      gate_controller_out:
+        gate: "2"
+        host: 127.0.0.1
+        serial_no: "441D6491AF18"
+    lpr:
+      lpr_in:
+        gate: "1"
+        host: 127.0.0.1
+        port: 8990
+        base_url: http://127.0.0.1:8990
+        public_url: http://127.0.0.1:8990
+        serves_http: true
+      lpr_out:
+        gate: "2"
+        host: 127.0.0.1
+        port: 8991
+        base_url: http://127.0.0.1:8991
+        public_url: http://127.0.0.1:8991
+        serves_http: true
+    cameras: {}
+
+  # The live site. Addresses verified from the packet capture (flow.md §3).
+  site:
+    database_url: ${TRAFIX_DB_SITE:-postgresql+psycopg://postgres:postgres@192.168.1.1:5432/Parkways}
+
+    broker:
+      host: 192.168.1.1
+      port: 1883
+      keepalive: 30
+      username: ${MQTT_USER:-bssparking}
+      password: ${MQTT_PASS:-}
+      # A fixed client_id with a persistent session evicts any other publisher
+      # sharing it — flow.md §8. Keep this distinct from the Laravel app's
+      # 'payment-subscriber-v3'.
+      client_id_prefix: trafix-py
+
+    api:
+      host: 0.0.0.0
+      port: 8000
+      base_url: http://192.168.1.1:8000
+
+    controllers:
+      gate_controller_in:
+        gate: "1"
+        host: 192.168.1.204
+        serial_no: "441D6491AF17"
+      # No exit controller exists on site (flow.md §7.6) — nothing commands
+      # the exit barrier today. Fill this in once the hardware is identified.
+      # gate_controller_out:
+      #   gate: "2"
+      #   host: 192.168.1.xxx
+      #   serial_no: "..."
+
+    lpr:
+      lpr_in:
+        gate: "1"
+        host: 192.168.1.130
+        port: 8090
+        base_url: http://192.168.1.130:8090
+        public_url: http://192.168.1.130:8090
+        serves_http: true
+      lpr_out:
+        gate: "2"
+        host: 192.168.1.149
+        port: 8090
+        base_url: http://192.168.1.149:8090
+        public_url: http://192.168.1.149:8090
+        # ⚠️ .149 accepted zero TCP connections during a 43-minute capture.
+        # Until that is fixed on the device, treat its advertised image URLs
+        # as unreachable (flow.md §7.2, open question 3).
+        serves_http: false
+
+    cameras:
+      cam_in:
+        host: 192.168.1.148
+        # The site uses Dahua's snapshot.cgi path against Uniview cameras and
+        # sends no auth, which is why all 21 attempts 404 (flow.md §7.5).
+        # Uniview's own path is below; confirm against the camera's firmware.
+        snapshot_path: /images/snapshot.jpg
+        username: ${CAM_USER:-admin}
+        password: ${CAM_PASS:-}
+      cam_out:
+        host: 192.168.1.150
+        snapshot_path: /images/snapshot.jpg
+        username: ${CAM_USER:-admin}
+        password: ${CAM_PASS:-}
+
+# Behaviour, applied in every environment.
+policies:
+  lpr_timeout_seconds: 5.0
+  lpr_retries: 1
+
+  # Ignore repeat presses of the ticket button within this many seconds.
+  button_debounce_seconds: 5.0
+
+  # Matches the only relay command ever seen on site: relay1 1000ms, beep 100ms.
+  barrier_pulse_ms: 1000
+  barrier_beep_ms: 100
+
+  # FIX for flow.md §7.6. Production sends nothing to the exit barrier; how it
+  # physically opens is undetermined. We publish an outputCtrl to /GATE/OUT/{gate}.
+  # Set false to reproduce production behaviour (exit never commanded).
+  command_exit_barrier: true
+
+  # FIX for §7.7. The two cameras disagree about plate strings and 4 of 6 entry
+  # tickets recorded no plate at all, so a plate can never be the lookup key.
+  # The ticket code is authoritative; the plate is advisory and only recorded.
+  # Set true to refuse exit when the plates disagree.
+  require_plate_match: false
+
+  storage_dir: storage

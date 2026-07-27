@@ -1,0 +1,7 @@
+[console_scripts]
+trafix = cli.trafix:main
+trafix-cashier = cli.cashier:main
+trafix-controller = mocks.gate_controller:main
+trafix-lpr = mocks.lpr_unit:main
+trafix-orchestrator = trafix.orchestrator:main
+trafix-server = trafix.server:main

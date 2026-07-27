@@ -1,0 +1,129 @@
+# Device addressing for the Trafix parking gate system.
+#
+# Switch environments with TRAFIX_ENV (default: sim).
+#   TRAFIX_ENV=sim   -> everything on localhost, distinct ports
+#   TRAFIX_ENV=site  -> the real device IPs
+#
+# NOTE: the "site" subnet below is a placeholder. Confirm the real prefix
+# (only the last octets were known: server .1, manless_in .204, lpr_in .130,
+# manless_out .2, lpr_out .149) before deploying.
+
+default_env: sim
+
+environments:
+
+  sim:
+    broker:
+      host: 127.0.0.1
+      port: 1883
+      keepalive: 30
+      client_id_prefix: trafix
+    devices:
+      server:
+        host: 127.0.0.1
+      manless_in:
+        lane: in
+        host: 127.0.0.1
+      manless_out:
+        lane: out
+        host: 127.0.0.1
+      lpr_in:
+        lane: in
+        host: 127.0.0.1
+        port: 8130
+        # URL the *server* uses to reach the camera
+        base_url: http://127.0.0.1:8130
+        # URL the camera embeds in image_url (what a terminal would fetch)
+        public_url: http://127.0.0.1:8130
+      lpr_out:
+        lane: out
+        host: 127.0.0.1
+        port: 8149
+        base_url: http://127.0.0.1:8149
+        public_url: http://127.0.0.1:8149
+
+  # Same shape as sim, on its own ports and database, so running the test suite
+  # never disturbs a simulator you have open in another terminal.
+  e2e:
+    broker:
+      host: 127.0.0.1
+      port: 1883
+      keepalive: 30
+      client_id_prefix: trafix-e2e
+      topic_root: trafix-e2e
+    database: trafix-e2e.db
+    devices:
+      server:
+        host: 127.0.0.1
+      manless_in:
+        lane: in
+        host: 127.0.0.1
+      manless_out:
+        lane: out
+        host: 127.0.0.1
+      lpr_in:
+        lane: in
+        host: 127.0.0.1
+        port: 9130
+        base_url: http://127.0.0.1:9130
+        public_url: http://127.0.0.1:9130
+      lpr_out:
+        lane: out
+        host: 127.0.0.1
+        port: 9149
+        base_url: http://127.0.0.1:9149
+        public_url: http://127.0.0.1:9149
+
+  site:
+    broker:
+      host: 192.168.1.1
+      port: 1883
+      keepalive: 30
+      client_id_prefix: trafix
+    devices:
+      server:
+        host: 192.168.1.1
+      manless_in:
+        lane: in
+        host: 192.168.1.204
+      manless_out:
+        lane: out
+        host: 192.168.1.2
+      lpr_in:
+        lane: in
+        host: 192.168.1.130
+        port: 80
+        base_url: http://192.168.1.130
+        public_url: http://192.168.1.130
+      lpr_out:
+        lane: out
+        host: 192.168.1.149
+        port: 80
+        base_url: http://192.168.1.149
+        public_url: http://192.168.1.149
+
+# Behaviour applied by the server regardless of environment.
+policies:
+  # What to do when the LPR times out or cannot read a plate.
+  #   allow -> issue the ticket with plate UNKNOWN (never trap a car at entry)
+  #   deny  -> refuse the ticket, gate stays shut
+  lpr_failure: allow
+
+  # What to do when the exit plate does not match the entry plate.
+  #   allow -> open, no flag
+  #   flag  -> open, but mark the transaction for operator review
+  #   deny  -> gate stays shut
+  plate_mismatch: flag
+
+  # Ignore repeat button presses on the same lane within this many seconds.
+  button_debounce_seconds: 5
+
+  # HTTP call to the LPR.
+  lpr_timeout_seconds: 4.0
+  lpr_retries: 1
+
+  # Below this OCR confidence the read is treated as unreadable.
+  lpr_min_confidence: 0.55
+
+storage:
+  database: trafix.db

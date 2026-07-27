@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trafix"
+version = "1.0.0"
+description = "Python implementation of the Trafix LPR parking system (Sinode GKJ, Salatiga)"
+readme = "README.md"
+requires-python = ">=3.11"
+
+dependencies = [
+    "paho-mqtt>=2.1.0",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.32.0",
+    "httpx>=0.27.0",
+    "pillow>=11.0.0",
+    "python-barcode>=0.15.1",
+    "PyYAML>=6.0.2",
+    "sqlalchemy>=2.0.36",
+    "psycopg[binary]>=3.2.3",
+    "alembic>=1.14.0",
+    "python-multipart>=0.0.12",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+]
+
+[project.scripts]
+# Operator-facing.
+trafix = "cli.trafix:main"
+trafix-cashier = "cli.cashier:main"
+
+# Long-running services.
+trafix-server = "trafix.server:main"
+trafix-orchestrator = "trafix.orchestrator:main"
+
+# Mock hardware, for running the site without any.
+trafix-lpr = "mocks.lpr_unit:main"
+trafix-controller = "mocks.gate_controller:main"
+
+[tool.setuptools]
+# Listed explicitly rather than auto-discovered. greenfield_prototype/ holds an
+# earlier design with its own trafix/, mocks/ and cli/ directories, so
+# auto-discovery would see duplicate top-level packages and refuse to build.
+packages = [
+    "trafix",
+    "mocks",
+    "cli",
+]
+
+# config/devices.yaml deliberately lives outside the package and is NOT shipped
+# as package data: it is site configuration, not code. load_config() finds it
+# via $TRAFIX_CONFIG, then ./config/, then the source tree.
