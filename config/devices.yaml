@@ -17,8 +17,8 @@ environments:
       host: 127.0.0.1
       port: 1883
       keepalive: 30
-      username: ${MQTT_USER:-}
-      password: ${MQTT_PASS:-}
+      username: ${MQTT_USER:-bssparking}
+      password: ${MQTT_PASS:-BCTDev_2025}
       client_id_prefix: trafix
 
     api:
@@ -70,6 +70,8 @@ environments:
       host: 127.0.0.1
       port: 1883
       keepalive: 30
+      username: ${MQTT_USER:-bssparking}
+      password: ${MQTT_PASS:-BCTDev_2025}
       client_id_prefix: trafix-e2e
     api:
       host: 127.0.0.1
@@ -110,7 +112,7 @@ environments:
       port: 1883
       keepalive: 30
       username: ${MQTT_USER:-bssparking}
-      password: ${MQTT_PASS:-}
+      password: ${MQTT_PASS:-BCTDev_2025}
       # A fixed client_id with a persistent session evicts any other publisher
       # sharing it — flow.md §8. Keep this distinct from the Laravel app's
       # 'payment-subscriber-v3'.
