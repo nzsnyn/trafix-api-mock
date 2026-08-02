@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 from datetime import datetime
@@ -17,7 +18,7 @@ import httpx
 from sqlalchemy import select
 
 from trafix import db
-from trafix.config import Config, load_config
+from trafix.config import Config, ConfigError, load_config
 from trafix.models import GateEvents, Transactions
 from trafix.mqtt_bus import MqttBus
 from trafix.protocol import (
@@ -27,6 +28,7 @@ from trafix.protocol import (
     gate_out_pos_topic,
     gate_out_topic,
     gate_status_topic,
+    open_barrier,
 )
 
 # Mirrors the constants in the mocks; kept here so the CLI does not import them.
@@ -36,6 +38,10 @@ SIM_PASS = "pass"
 SIM_CYCLE = "cycle"
 SIM_SET = "set"
 SIM_READ_PLATE = "read_plate"
+
+# Relay keys the gate controller understands (flow.md §5: relay1 = entry
+# barrier; relay2/relay3 were never actuated on site).
+GATE_RELAYS = ("relay1Out", "relay2Out", "relay3Out")
 
 
 def controller_sim_topic(gate: str) -> str:
@@ -109,6 +115,42 @@ def cmd_exit_read(args, config) -> None:
     """The exit LPR spots a plate and announces it."""
     _send(config, lpr_sim_topic(args.gate), SIM_READ_PLATE, plate=args.plate or "")
     print(f"gate {args.gate}: exit camera read {args.plate or '(random)'}")
+
+
+def _relay_key(name: str) -> str:
+    """Normalise ``relay2`` to the wire key ``relay2Out``, rejecting typos."""
+    if name in GATE_RELAYS:
+        return name
+    if re.fullmatch(r"relay[1-3]", name):
+        return f"{name}Out"
+    _die(f"relay must be one of {', '.join(GATE_RELAYS)}")
+
+
+def cmd_gate(args, config) -> None:
+    """Pulse a relay on a gate controller (outputCtrl)."""
+    relay = _relay_key(args.relay)
+    try:
+        serial = config.controller_for(args.gate).serial_no
+    except ConfigError:
+        serial = ""
+        print(
+            f"warning: no controller configured for gate {args.gate} "
+            "(publishing with an empty serialNo)",
+            file=sys.stderr,
+        )
+
+    topic = gate_out_topic(args.gate) if args.exit_lane else gate_in_topic(args.gate)
+    envelope = open_barrier(
+        serial, relay=relay, pulse_ms=args.ms, beep_ms=args.beep_ms
+    )
+    bus = _bus(config, "cli-gate")
+    bus.publish(topic, envelope)
+    time.sleep(0.3)
+    bus.disconnect()
+
+    print(f"{relay} pulse {args.ms} ms -> {topic}")
+    print(f"serialNo : {serial or '(none)'}")
+    print(envelope.to_json())
 
 
 def _queue_plate(config: Config, gate: str, plate: str) -> None:
@@ -343,6 +385,18 @@ def build_parser() -> argparse.ArgumentParser:
     exit_read.add_argument("--gate", default="2")
     exit_read.add_argument("--plate")
     exit_read.set_defaults(func=cmd_exit_read)
+
+    gate = sub.add_parser("gate", help="pulse a relay on a gate controller")
+    gate.add_argument("--gate", default="1")
+    gate.add_argument(
+        "--relay", default="relay1Out", help="relay to pulse: relay1 | relay2 | relay3"
+    )
+    gate.add_argument("--ms", type=int, default=1000, help="pulse duration in ms")
+    gate.add_argument("--beep-ms", type=int, default=0, help="beeper ms (0 = silent)")
+    gate.add_argument(
+        "--exit-lane", action="store_true", help="send to /GATE/OUT/{gate} instead"
+    )
+    gate.set_defaults(func=cmd_gate)
 
     lpr = sub.add_parser("lpr", help="drive a mock LPR unit")
     lpr.add_argument("--gate", default="1")
