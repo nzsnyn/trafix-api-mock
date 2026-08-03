@@ -46,7 +46,7 @@ environments:
         serves_http: true
       lpr_out:
         gate: "2"
-        host: 192.168.1.149
+        host: 192.168.1.148
         port: 8091
         base_url: http://192.168.1.149:8090
         public_url: http://192.168.1.149:8090
