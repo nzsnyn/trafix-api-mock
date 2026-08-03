@@ -48,7 +48,7 @@ SIM_SET = "set"
 
 # The real board publishes a cumulative status heartbeat roughly every 50 s
 # (observed 2026-08-04: 00:13:35 -> 00:14:25).
-STATUS_PERIOD_SECONDS = 50.0
+STATUS_PERIOD_SECONDS = 10.0
 
 
 def sim_topic(gate: str) -> str:
