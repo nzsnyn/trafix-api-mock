@@ -17,6 +17,7 @@ Physical devices needed to run the Trafix parking system on a real site.
 | 7 | Exit Gate Controller | Relay board | TBD | Exit barrier control | Yes |
 | 8 | Entry CCTV | Uniview IP camera | `192.168.1.148` | Entry snapshot capture | Optional |
 | 9 | Exit CCTV | Uniview IP camera | `192.168.1.150` | Exit snapshot capture | Optional |
+| 10 | Receipt printer | Network ESC/POS | `192.168.1.168` | Ticket receipt printing (referenced in `config/receiptprinter.php`) | Optional |
 
 ---
 
@@ -52,7 +53,9 @@ Physical devices needed to run the Trafix parking system on a real site.
 |----------|-----------|----------------|---------|
 | MQTT publish | LPR → Server | `gate/out/1/pos` | Announce plate read |
 
-**⚠️ HTTP is dead.** The `.149` unit accepts zero TCP connections. Image downloads from exit will fail. Only MQTT works.
+**⚠️ Image downloads from exit still fail.** On 2026-08-03 `.149` answered on `:8090`
+(`pw-signage-gateout-server`) but rejects GET with `405 Only POST method is allowed`; SSH `:22`,
+Boa HTTPd `:80` and VNC `:5900` are also open. Only MQTT (publish) is used for the plate read.
 
 **Published message:**
 ```json
@@ -120,7 +123,7 @@ From the entry gate controller (`.204`), inferred from packet capture:
 | Item | Status | Action Needed |
 |------|--------|---------------|
 | Entry LPR `.130` | Configured | Verify HTTP `/checklpr` works |
-| Exit LPR `.149` | Configured, HTTP dead | Confirm MQTT-only mode |
+| Exit LPR `.149` | Configured; `:8090` POST-only (GET 405) | Confirm the intended POST API / image path |
 | Entry gate `.204` | Configured | Verify serial `441D6491AF17` |
 | Exit gate | **Not configured** | Find IP and serial number |
 | Entry camera `.148` | Configured | Verify snapshot path works |
@@ -275,7 +278,7 @@ nmap -sV --open 192.168.1.0/24 -p 1883,5432,8090,8000,80
 | MQTT broker | Port 1883 open | `nmap -p 1883 192.168.1.1` |
 | PostgreSQL | Port 5432 open | `nmap -p 5432 192.168.1.1` |
 | Entry LPR | Port 8090 + HTTP responds | `curl -v http://192.168.1.130:8090/checklpr` |
-| Exit LPR | Port 8090 (may be dead) | `nmap -p 8090 192.168.1.149` |
+| Exit LPR | Port 8090 accepts POST only | `curl -v -X POST http://192.168.1.149:8090/` |
 | Gate controller | MQTT publishes events | (see test below) |
 | Cameras | HTTP responds | `curl -v http://192.168.1.148/images/snapshot.jpg` |
 
@@ -356,7 +359,7 @@ Have a vehicle drive past the exit camera (or trigger a manual plate read on the
 {"plate_num":"B1234CD","url_gambar":"http://192.168.1.149:8090/image/B1234CD.jpg"}
 ```
 
-**Note:** The `url_gambar` from the exit LPR is likely unreachable (`.149` HTTP is dead). This is expected — the plate number is what matters.
+**Note:** The `url_gambar` from the exit LPR is still not downloadable — `.149:8090` returns 405 to GET (POST-only signage server). This is expected — the plate number is what matters.
 
 **Failure modes:**
 - `No messages in 60 seconds` — exit LPR is not publishing, or wrong MQTT auth

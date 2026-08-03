@@ -250,8 +250,9 @@ Arrival to barrier is about 4.4 s on site; the full cycle about 10 s.
 | `site` | the real `192.168.1.x` addresses |
 
 The `site` block reproduces two known device faults so you can see how the
-system degrades: `lpr_out.serves_http: false` (the real `.149` accepts zero TCP
-connections) and the corrected Uniview snapshot path.
+system degrades: `lpr_out.serves_http: false` (the real `.149:8090` is POST-only
+and rejects GET — the advertised image URL still can't be fetched) and the
+corrected Uniview snapshot path.
 
 ⚠️ **Before deploying to site**, settle the open questions in flow.md §11 —
 above all: where is the existing orchestrator, and does it need stopping before

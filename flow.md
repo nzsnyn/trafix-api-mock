@@ -95,12 +95,16 @@ All ✅ VERIFIED from the capture (`enp2s0`, 2026‑07‑24 03:51:19–04:34:48 
 |---|---|---|
 | `192.168.1.1` | **Server** | nginx + Laravel (PHP 8.2.32), Mosquitto on `:1883`, image store `/storage/` |
 | `192.168.1.2` | **Cashier desktop app** | Tauri (`Origin: tauri://localhost`), drives gate-out |
+| `192.168.1.3` | LAN router/gateway | `_gateway`, MAC `DC:4E:F4` (Shenzhen MTN Electronics). The network gateway, absent from the original capture notes |
 | `192.168.1.130` | **Entry LPR unit** | Serves `:8090` (`pw-signage-server`). Healthy — accepted 6 connections |
-| `192.168.1.149` | **Exit LPR unit** | Publishes MQTT. **Accepts zero TCP connections — its `:8090` is dead** |
+| `192.168.1.149` | **Exit LPR unit** | Linux box: SSH `:22` (OpenSSH 7.6p1), Boa HTTPd `:80`, VNC `:5900`, `pw-signage-gateout-server` on `:8090` (POST-only). Publishes MQTT. See §7.2 |
 | `192.168.1.148` | Uniview IP camera | Streams on `:9998`/`:9999` (~570 MB/capture), config CGI on `:8000` |
 | `192.168.1.150` | Uniview IP camera | Same pattern (~400 MB/capture) |
+| `192.168.1.168` | **Network receipt printer** | Referenced as `connector_descriptor` in `config/receiptprinter.php:22` (ESC/POS over TCP). ❓ Offline during the 2026-08-03 nmap sweep |
 | `192.168.1.204` | **Gate controller** | Relay + printer board, `serialNo 441D6491AF17`. Entry barrier + thermal printer |
 | `192.168.1.182` | Unidentified device | Has a permanently dead MQTT session (see §7.4) ❓ role unknown |
+| `192.168.1.4` / `.9` / `.33` | Uniview IP cameras | OUI `C4:79:05`; additional Uniview units beyond `.148`/`.150`, roles ❓ unconfirmed |
+| `192.168.1.6` / `.7` / `.8` / `.34` / `.36` | IP cameras | OUI `88:26:3F`; HTTP `:80` + RTSP `:554`, vendor ❓ unconfirmed |
 
 **External:** `remote.bct.co.id` (`103.164.21.20`) receives heartbeat/sysinfo — **currently
 100 % failing**, see §7.3. The LPR units and `.182` ping Tencent Cloud
@@ -133,7 +137,7 @@ flowchart TB
         DB[("PostgreSQL<br/>Parkways")]
     end
     subgraph exit["EXIT LANE"]
-        LPROUT["Exit LPR .149<br/>:8090 NOT LISTENING ❌"]
+        LPROUT["Exit LPR .149<br/>:8090 signage POST-only; SSH/VNC open"]
         CAM["Uniview cams .148 / .150"]
     end
     CASHIER["Cashier app .2<br/>Tauri desktop"]
@@ -215,7 +219,7 @@ Reconstructed at t = 331–358 s.
 | # | Actor | Event | Result |
 |---|---|---|---|
 | 1 | `.149` → server | `POST /api/lpr/gateout` | ❌ **500** — method does not exist (§7.1) |
-| 2 | `.149` → broker | `gate/out/1/pos` `{"plate_num":"H4818AI","url_gambar":"http://192.168.1.149:8090/image/H4818AI.jpg"}` | ⚠️ that URL is unreachable (§7.2) |
+| 2 | `.149` → broker | `gate/out/1/pos` `{"plate_num":"H4818AI","url_gambar":"http://192.168.1.149:8090/image/H4818AI.jpg"}` | ⚠️ GET on that URL returns 405 (§7.2) |
 | 3 | `.2` → server | `POST /api/lpr/checkimagegateout?plate_num=…` | ❌ **404** `Active transaction not found for this plate_num` |
 | 4 | `.2` → server | `POST /api/gateout/detailtransaction` (multipart) | ✅ **200** — fee, duration, member status |
 | 4a | server → `.148` | `GET /cgi-bin/snapshot.cgi?channel=1&subtype=0` (`CaptureCctv()`) | ❌ **404** — no exit photo (§7.5) |
@@ -281,16 +285,27 @@ The LPR route set is otherwise symmetric; exactly one of six is missing:
 vs ticket (`transaction_code`), calls `CalculateRate()`, then sets `time_checkout`,
 `payment_status='lunas'`, `gate_status='out'`, `total`, `duration`, `cam_out`/`camout_lpr`.
 
-### 7.2 ❌ Exit LPR advertises an image URL nothing can reach
+### 7.2 ⚠️ Exit LPR advertises an image URL nothing can fetch
 
-`.149` publishes `url_gambar: http://192.168.1.149:8090/image/<PLATE>.jpg`, but ✅ **`.149` never
-accepted a single TCP connection during the whole capture** and nothing ever tried `:8090` on it.
-Compare `.130`, which accepted 6 connections on `:8090`.
+`.149` publishes `url_gambar: http://192.168.1.149:8090/image/<PLATE>.jpg`. During the whole
+43-minute capture `.149` accepted zero TCP connections, which read as "its `:8090` is dead". The
+2026-08-03 nmap sweep rewrites that:
 
-Consequence: even with §7.1 fixed, `checkLprImageGateOut`'s `Http::timeout(5)->get($url_image)`
-would fall into its `'Image is not available or unreachable'` branch. ❓ Whether `.149` is
-misconfigured, running different firmware from `.130`, or has a stopped service is **not
-determined** — inspect the device.
+| Port | Service (nmap) |
+|------|----------------|
+| `22` | OpenSSH 7.6p1 (Ubuntu) |
+| `80` | Boa HTTPd 0.94.13 |
+| `5900` | VNC (protocol 3.8) |
+| `8090` | `pw-signage-gateout-server` — answers, but returns `405 Only POST method is allowed` to GET |
+
+So `.149` is a Linux appliance whose signage server is **up today**; the earlier "dead" reading was
+capture-period-specific (or a service that has since returned). The advertised image URL is a
+**GET** to `/image/<PLATE>.jpg`, which the POST-only server rejects with 405 — so
+`checkLprImageGateOut`'s `Http::timeout(5)->get($url_image)` still falls into its
+`'Image is not available or unreachable'` branch. **Consequence unchanged, mechanism corrected.**
+
+❓ What POST endpoint does the gateout server accept, and does `GET /image/...` work at all —
+determine before wiring the Python exit path to `.149`.
 
 ### 7.3 ❌ Remote heartbeat 100 % failing (upstream, not your code)
 
@@ -476,7 +491,8 @@ configuration-level.
 1. **Where is the MQTT orchestrator?** (§2) Nothing that opens a barrier is in this repo. Highest
    priority — you cannot safely change gate behaviour without it. `mosquitto/` is mode 000.
 2. **How does the exit barrier open?** (§7.6) No command exists in code or capture.
-3. **Why is `.149:8090` dead?** (§7.2) Device-side; compare against `.130`.
+3. **What does `.149:8090`'s POST API accept, and does `GET /image/` work?** (§7.2) The server
+   is up but POST-only; compare against `.130`.
 4. **Are `H488AI` / `H4818AI` / `48184I` one vehicle?** (§7.7) Needs a `transactions` query.
 5. **`gate_status` vs `time_checkout`** — which is authoritative for "still inside"? (§7.7)
 6. **What is `.182`?** (§7.4) Unidentified host with a dead external broker session.
@@ -492,7 +508,8 @@ Rough dependency order — note that steps 2–4 are device/infrastructure work,
    the plate as advisory** — that is what already works in production, and it degrades gracefully
    for the 4-in-6 blank-plate reads. Fuzzy plate matching is possible but needs an operator
    confirmation step.
-3. Fix `.149`'s image service or change what it advertises (§7.2).
+3. Make `.149`'s `:8090` serve `GET /image/...` (currently 405 POST-only) or change what it
+   advertises (§7.2).
 4. Fix the Uniview snapshot path/auth so `cam_out` populates (§7.5).
 5. Establish and then wire exit barrier control (§7.6) — **blocked on question 1 and 2 above.**
 
