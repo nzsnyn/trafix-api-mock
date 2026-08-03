@@ -383,9 +383,15 @@ Physically interact with the gate:
 {"method":"inputInfo","serialNo":"441D6491AF17","data":{"input3":1,"input2":0,"input4":0,"input1":0}}
 ```
 
-When the barrier command is sent later, the controller should also `ack`:
+When the barrier command is sent later, the controller should also `ack` — with
+**empty data** (verified on site 2026-08-04):
 ```json
-{"method":"outputCtrl","serialNo":"441D6491AF17","data":{"code":"0"}}
+{"method":"outputCtrl","serialNo":"441D6491AF17","data":{}}
+```
+
+The controller also publishes a cumulative `status` heartbeat (roughly every 50 s):
+```json
+{"method":"status","serialNo":"441D6491AF17","data":{"input1":0,"input2":0,"input3":0,"input4":0,"relay1":0,"relay2":0,"relay3":0,"beep":0}}
 ```
 
 **Failure modes:**

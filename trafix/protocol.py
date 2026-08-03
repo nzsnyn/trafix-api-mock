@@ -218,10 +218,35 @@ def input_info(serial_no: str, **inputs: int) -> Envelope:
     )
 
 
-def ack(serial_no: str, method: str, code: str = "0") -> Envelope:
+def controller_status(
+    serial_no: str,
+    *,
+    inputs: dict[str, int] | None = None,
+    relays: dict[str, int] | None = None,
+    beep: int = 0,
+) -> Envelope:
+    """The periodic ``status`` heartbeat the real board publishes.
+
+    Observed on site 2026-08-04 (roughly every 50 s) as
+    ``{"method":"status","data":{"input1":0,...,"input4":0,"relay1":0,
+    "relay2":0,"relay3":0,"beep":0}}``. Note the status side uses the short
+    relay keys (``relay1``), unlike the command side's ``relay1Out``.
+    """
+    data: dict[str, Any] = {}
+    for i in range(1, 5):
+        data[f"input{i}"] = int((inputs or {}).get(f"input{i}", 0))
+    for r in range(1, 4):
+        data[f"relay{r}"] = int((relays or {}).get(f"relay{r}", 0))
+    data["beep"] = int(beep)
+    return Envelope(method=METHOD_STATUS, serial_no=serial_no, data=data, task_no=2)
+
+
+def ack(serial_no: str, method: str) -> Envelope:
     """The controller's acknowledgement of a command.
 
-    Observed as ``{"method":"txUartData","data":{"code":"0"}}`` — ``code`` is a
-    string, not an integer.
+    The real board acks with **empty data**: observed on site 2026-08-04 as
+    ``{"method":"txUartData","data":{}}`` and ``{"method":"outputCtrl","data":{}}``
+    on ``/GATE/event/1``. This supersedes the earlier ``{"code":"0"}`` shape
+    documented in flow.md §5/§8, which the board's current firmware does not send.
     """
-    return Envelope(method=method, serial_no=serial_no, data={"code": code})
+    return Envelope(method=method, serial_no=serial_no, data={})

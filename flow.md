@@ -172,7 +172,7 @@ not triggered by an inbound HTTP call.
 | 3 | `.204` → broker | `inputInfo input2=1` (input3 still 1) — driver presses ticket button |
 | 4 | server → `.130` | `GET :8090/checklpr` → `{"plate_num":"H488AI","url_gambar":"http://192.168.1.130:8090/image/H488AI.jpg"}` |
 | 5 | server → `.204` | `/GATE/IN/1` `txUartData` #1 — ESC/POS site header |
-| 6 | `.204` → server | `/GATE/event/1` `txUartData code:"0"` — ack |
+| 6 | `.204` → server | `/GATE/event/1` `txUartData {}` — ack (empty data, verified on site 2026-08-04) |
 | 7 | server → `.204` | `/GATE/IN/1` `txUartData` #2 — ticket body (QR, plate, time, tariffs) — **200 ms after #1** |
 | 8 | server → `.130` | `/GATE/IN/1/status` `{"status":"thanks"}` |
 | 9 | server → `.204` | `/GATE/IN/1` `outputCtrl {beepOut:[1,100], relay1Out:[1,1000]}` — **🚧 BARRIER OPENS** |

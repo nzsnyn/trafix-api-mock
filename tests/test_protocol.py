@@ -121,3 +121,45 @@ def test_input_info_reports_sensor_state():
     envelope = protocol.input_info(SERIAL, input3=1, input2=1)
     assert envelope.method == METHOD_INPUT_INFO
     assert envelope.get("input3") == 1
+
+
+def test_ack_carries_empty_data_like_the_real_board():
+    envelope = protocol.ack(SERIAL, METHOD_TX_UART_DATA)
+    assert envelope.method == METHOD_TX_UART_DATA
+    assert envelope.serial_no == SERIAL
+    assert envelope.data == {}
+    assert envelope.to_json().endswith('"method":"txUartData","data":{}}')
+
+
+def test_controller_status_reports_inputs_relays_and_beep():
+    envelope = protocol.controller_status(
+        SERIAL,
+        inputs={"input3": 1},
+        relays={"relay1": 1},
+        beep=1,
+    )
+    assert envelope.method == "status"
+    assert envelope.data == {
+        "input1": 0,
+        "input2": 0,
+        "input3": 1,
+        "input4": 0,
+        "relay1": 1,
+        "relay2": 0,
+        "relay3": 0,
+        "beep": 1,
+    }
+
+
+def test_controller_status_defaults_to_all_zeros():
+    envelope = protocol.controller_status(SERIAL)
+    assert envelope.data == {
+        "input1": 0,
+        "input2": 0,
+        "input3": 0,
+        "input4": 0,
+        "relay1": 0,
+        "relay2": 0,
+        "relay3": 0,
+        "beep": 0,
+    }

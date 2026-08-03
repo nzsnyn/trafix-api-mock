@@ -25,10 +25,12 @@ from trafix.protocol import (
     INPUT_ARRIVAL_LOOP,
     INPUT_PASS_LOOP,
     INPUT_TICKET_BUTTON,
+    INPUT_UNKNOWN,
     METHOD_OUTPUT_CTRL,
     METHOD_TX_UART_DATA,
     Envelope,
     ack,
+    controller_status,
     gate_event_topic,
     gate_in_topic,
     gate_out_topic,
@@ -43,6 +45,10 @@ SIM_PRESS = "press"
 SIM_PASS = "pass"
 SIM_CYCLE = "cycle"  # arrive, press, then pass once the barrier opens
 SIM_SET = "set"
+
+# The real board publishes a cumulative status heartbeat roughly every 50 s
+# (observed 2026-08-04: 00:13:35 -> 00:14:25).
+STATUS_PERIOD_SECONDS = 50.0
 
 
 def sim_topic(gate: str) -> str:
@@ -71,7 +77,17 @@ class GateControllerMock:
 
         # Sensor state, reported cumulatively the way the real board does:
         # a button press message still carries input3=1 if the car is present.
-        self.inputs = {INPUT_ARRIVAL_LOOP: 0, INPUT_TICKET_BUTTON: 0, INPUT_PASS_LOOP: 0}
+        # input1 is never seen active but is still reported as 0.
+        self.inputs = {
+            INPUT_UNKNOWN: 0,
+            INPUT_ARRIVAL_LOOP: 0,
+            INPUT_TICKET_BUTTON: 0,
+            INPUT_PASS_LOOP: 0,
+        }
+        # Relay/beeper state for the status heartbeat. Short keys (relay1),
+        # as the status method uses — distinct from the wire keys (relay1Out).
+        self.relays = {"relay1": 0, "relay2": 0, "relay3": 0}
+        self.beep = 0
         self.last_ticket: str | None = None
         self._timers: list[threading.Timer] = []
         self._lock = threading.Lock()
@@ -82,6 +98,7 @@ class GateControllerMock:
         self.bus.subscribe(self.command_topic, self._on_command)
         self.bus.subscribe(sim_topic(self.gate), self._on_sim)
         self.bus.connect()
+        self._later(STATUS_PERIOD_SECONDS, self._status_heartbeat)
         log.info(
             "[gate %s] controller %s online, listening on %s",
             self.gate,
@@ -118,6 +135,28 @@ class GateControllerMock:
 
     def _ack(self, method: str) -> None:
         self.bus.publish(gate_event_topic(self.gate), ack(self.serial_no, method))
+
+    def _publish_status(self) -> None:
+        """The cumulative status heartbeat, mirroring the real board's shape."""
+        self.bus.publish(
+            gate_event_topic(self.gate),
+            controller_status(
+                self.serial_no,
+                inputs=self.inputs,
+                relays=self.relays,
+                beep=self.beep,
+            ),
+        )
+
+    def _status_heartbeat(self) -> None:
+        self._publish_status()
+        self._later(STATUS_PERIOD_SECONDS, self._status_heartbeat)
+
+    def _set_relay(self, relay: str, value: int) -> None:
+        self.relays[relay] = value
+
+    def _clear_beep(self) -> None:
+        self.beep = 0
 
     # -- simulator control -------------------------------------------------
 
@@ -199,15 +238,28 @@ class GateControllerMock:
     def _actuate(self, message: Envelope) -> None:
         data = message.data if isinstance(message.data, dict) else {}
         relays = {k: v for k, v in data.items() if k.startswith("relay")}
-        for relay, value in relays.items():
+        for key, value in relays.items():
             duration = value[1] if isinstance(value, list) and len(value) > 1 else 0
+            short = key[:-3] if key.endswith("Out") else key  # relay1Out -> relay1
+            if short in self.relays:
+                self.relays[short] = 1
+                if duration > 0:
+                    self._later(duration / 1000.0, lambda s=short: self._set_relay(s, 0))
             log.info(
                 "[gate %s] 🚧 %s PULSED for %sms — BARRIER OPEN",
                 self.gate,
-                relay,
+                key,
                 duration,
             )
         if "beepOut" in data:
+            beep_ms = (
+                data["beepOut"][1]
+                if isinstance(data["beepOut"], list) and len(data["beepOut"]) > 1
+                else 0
+            )
+            self.beep = 1
+            if beep_ms > 0:
+                self._later(beep_ms / 1000.0, self._clear_beep)
             log.info("[gate %s] beep", self.gate)
 
         self._ack(METHOD_OUTPUT_CTRL)
