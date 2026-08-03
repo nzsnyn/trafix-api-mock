@@ -7,4 +7,5 @@ __pycache__/
 logs/
 .pytest_cache/
 storage/
+graphify-out/
 mqtt_app_lpr/
