@@ -11,7 +11,7 @@ default_env: sim
 environments:
 
   sim:
-    database_url: ${TRAFIX_DB:-postgresql+psycopg://trafix:trafix@127.0.0.1:5433/parkways}
+    database_url: ${TRAFIX_DB_SITE:-postgresql+psycopg://postgres:PWOff2022@192.168.1.1:5432/Parkways}
 
     broker:
       host: 127.0.0.1
