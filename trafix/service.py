@@ -50,6 +50,7 @@ STATUS_TICKET_USED = "ticket_used"
 STATUS_NOT_FOUND = "notfound"
 STATUS_ALREADY_PAID = "already_paid"
 STATUS_PLATE_MISMATCH = "plate_mismatch"
+STATUS_MEMBER_EXPIRED = "member_expired"
 
 
 class Publisher(Protocol):
@@ -82,6 +83,22 @@ class GateInResult:
     plate: str | None
     image_path: str
     type_qr: str
+
+
+@dataclass
+class MemberGateInResult:
+    """The outcome of an RFID member auto-entry."""
+
+    status: str
+    transaction_code: str | None = None
+    member_name: str | None = None
+    member_code: str | None = None
+    plate: str | None = None
+    message: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.status == STATUS_SUCCESS
 
 
 @dataclass
@@ -290,6 +307,106 @@ class ParkingService:
             plate=plate,
             image_path=image_path,
             type_qr=type_qr,
+        )
+
+    def member_gate_in(
+        self,
+        *,
+        gate: str,
+        card_no: str,
+        serial_no: str,
+        vehicle_id: int | None = None,
+    ) -> MemberGateInResult:
+        """A member tapped an RFID card at the entry. No ticket is printed.
+
+        Mirrors the on-site ``readCard`` event (flow.md §5): the tag is resolved
+        against ``Members.card_number``; an active member for this vehicle class
+        gets a transaction and the barrier opens. Unknown cards and expired
+        subscriptions are rejected — the barrier stays shut.
+        """
+        card_no = str(card_no or "").strip()
+        if not card_no:
+            return MemberGateInResult(
+                status=STATUS_NOT_FOUND, message="No card number supplied"
+            )
+
+        with self.session_factory() as session:
+            member = session.scalar(
+                select(Members).where(Members.card_number == card_no)
+            )
+            if member is None:
+                log.info("gate %s: card %s is not a member", gate, card_no)
+                return MemberGateInResult(
+                    status=STATUS_NOT_FOUND,
+                    message=f"No member found for card {card_no}",
+                )
+
+            if not rates.is_active_member(member, vehicle_id):
+                log.warning(
+                    "gate %s: card %s belongs to %s but the subscription is "
+                    "expired or the vehicle class mismatches",
+                    gate,
+                    card_no,
+                    member.name,
+                )
+                return MemberGateInResult(
+                    status=STATUS_MEMBER_EXPIRED,
+                    member_name=member.name,
+                    member_code=member.member_code,
+                    plate=member.police_number,
+                    message="Member subscription expired or vehicle class mismatch",
+                )
+
+            location = session.scalar(select(Locations).limit(1))
+            if location is None:
+                raise RuntimeError("no row in 'locations' — the site is not configured")
+
+            transaction_code = self.generate_transaction_code(session)
+            checkin_at = self.clock().strftime(DATETIME_FORMAT)
+
+            transaction = Transactions(
+                transaction_code=transaction_code,
+                time_checkin=checkin_at,
+                status=STATUS_GATEIN,
+                gate_in=gate,
+                gate_status=GATE_STATUS_IN,
+                vehicle_id=member.vehicle_id or vehicle_id,
+                police_number=member.police_number,
+                card_number=card_no,
+                type="member",
+                payment_status=PAYMENT_PAID,
+                total=0,
+                id_userlocations=location.id_userlocations,
+                cam_in="-",
+                camin_lpr="-",
+                payment_type="cash",
+            )
+            session.add(transaction)
+            session.flush()
+
+            self._log_event(
+                session,
+                source="api",
+                method="gatein-card",
+                gate=gate,
+                transaction_code=transaction_code,
+                detail=f"card={card_no} member={member.name}",
+            )
+            session.commit()
+
+        log.info(
+            "gate %s: member %s entered on card %s (ticket %s)",
+            gate,
+            member.name,
+            card_no,
+            transaction_code,
+        )
+        return MemberGateInResult(
+            status=STATUS_SUCCESS,
+            transaction_code=transaction_code,
+            member_name=member.name,
+            member_code=member.member_code,
+            plate=member.police_number,
         )
 
     def _allocate_qr(

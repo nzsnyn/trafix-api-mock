@@ -163,3 +163,19 @@ def test_controller_status_defaults_to_all_zeros():
         "relay3": 0,
         "beep": 0,
     }
+
+
+def test_read_card_matches_the_observed_rfid_event():
+    envelope = protocol.read_card(SERIAL, "006343040")
+    assert envelope.method == "readCard"
+    assert envelope.data == {"reader": 1, "cardLen": 10, "cardNo": "006343040"}
+
+
+def test_read_card_keeps_leading_zeros():
+    envelope = protocol.read_card(SERIAL, "006343040")
+    assert envelope.get("cardNo") == "006343040"
+
+
+def test_read_card_len_is_not_the_string_length():
+    envelope = protocol.read_card(SERIAL, "006343040")
+    assert len(envelope.get("cardNo")) != envelope.get("cardLen")

@@ -35,6 +35,7 @@ from trafix.protocol import (
     gate_in_topic,
     gate_out_topic,
     input_info,
+    read_card,
 )
 
 log = logging.getLogger("controller")
@@ -44,6 +45,7 @@ SIM_ARRIVE = "arrive"
 SIM_PRESS = "press"
 SIM_PASS = "pass"
 SIM_CYCLE = "cycle"  # arrive, press, then pass once the barrier opens
+SIM_CARD = "card"  # an RFID tag is presented to the card reader
 SIM_SET = "set"
 
 # The real board publishes a cumulative status heartbeat roughly every 50 s
@@ -186,6 +188,13 @@ class GateControllerMock:
             self.inputs[INPUT_PASS_LOOP] = 0
             self._report_inputs()
             self._later(0.4, lambda: self._on_sim("", Envelope(SIM_PRESS, self.serial_no)))
+
+        elif command == SIM_CARD:
+            card_no = str(message.get("card_no") or message.get("cardNo") or "006343040")
+            log.info("[gate %s] RFID card %s presented", self.gate, card_no)
+            self.bus.publish(
+                gate_event_topic(self.gate), read_card(self.serial_no, card_no)
+            )
 
         elif command == SIM_SET:
             if "auto_pass" in (message.data or {}):

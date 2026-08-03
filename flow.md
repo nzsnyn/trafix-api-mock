@@ -192,6 +192,19 @@ picks a Xendit QR from `XenditQrPool` if the location is `active` (else `typeqr 
 inserts `transactions` with `status='gatein'`, builds ESC/POS via
 `TicketPrinterService::buildGateIn1/2()`, publishes both parts to `/GATE/IN/{gate}` at QoS 1.
 
+**Member auto-entry (observed 2026-08-04):** when a member taps an RFID card, the board
+publishes `readCard` instead of a button press:
+
+```
+00:36:10  /GATE/event/1  readCard  {"reader":1,"cardLen":10,"cardNo":"006343040"}
+```
+
+`cardNo` is a string (the leading zero is significant) and `cardLen` is the reader's fixed
+buffer length — 10 — not `len(cardNo)` (9 here). No ack follows. The orchestrator resolves
+the card against `Members.card_number`, writes a `type='member'` transaction (no paper
+ticket), and opens the barrier. The trailing `inputInfo input2=1` with `input3=0` in the
+same log is a separate, unrelated button event.
+
 **Decoded ticket** (✅ actual bytes off the wire):
 
 ```
@@ -388,7 +401,7 @@ because `.182`'s dead session (§7.4) contributes 118 unanswered pings.
 
 | Topic | Direction | Count | Payload |
 |---|---|---|---|
-| `/GATE/event/1` | `.204` → server | 122 | Controller → server: `status`, `inputInfo`, and acks for `txUartData` / `outputCtrl` |
+| `/GATE/event/1` | `.204` → server | 122 | Controller → server: `status`, `inputInfo`, `readCard`, and acks for `txUartData` / `outputCtrl` |
 | `/GATE/IN/1` | server → `.204` | 18 | Commands: `txUartData` (print), `outputCtrl` (relay/beep) |
 | `/GATE/IN/1/status` | server → `.130` | 10 | `{"status":"welcome"}` / `{"status":"thanks"}` |
 | `gate/out/1/pos` | `.149` → server | 5 | `{"plate_num":…,"url_gambar":…}` — ⚠️ note lowercase/different convention from the `/GATE/…` topics |
@@ -397,7 +410,7 @@ Envelope used on `/GATE/IN/1` and `/GATE/event/1`:
 
 ```json
 {"id":"<md5 or int>","serialNo":"441D6491AF17","version":"1.0","taskNo":2,
- "method":"txUartData|outputCtrl|inputInfo|status","data": {...}}
+ "method":"txUartData|outputCtrl|inputInfo|status|readCard","data": {...}}
 ```
 
 Barrier open (the one that matters):

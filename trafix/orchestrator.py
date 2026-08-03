@@ -45,6 +45,7 @@ from trafix.protocol import (
     INPUT_TICKET_BUTTON,
     METHOD_INPUT_INFO,
     METHOD_OUTPUT_CTRL,
+    METHOD_READ_CARD,
     METHOD_TX_UART_DATA,
     STATUS_THANKS,
     STATUS_WELCOME,
@@ -75,12 +76,17 @@ class LaneState:
 
 
 class Orchestrator:
-    def __init__(self, config: Config, *, vehicle_id: int = 1) -> None:
+    def __init__(
+        self, config: Config, *, vehicle_id: int = 1, rfid_only: bool = False
+    ) -> None:
         self.config = config
         # The gate hardware cannot tell a car from a motorcycle. On a
         # single-class site this is fixed; a mixed site needs either a
         # per-lane setting or an operator button.
         self.vehicle_id = vehicle_id
+        # On-site live testing mode: react to nothing but readCard so we never
+        # issue a second ticket for a real car or the ticket button.
+        self.rfid_only = rfid_only
 
         self.bus = MqttBus(config.broker, client_id="orchestrator")
         self.http = httpx.Client(timeout=config.policies.lpr_timeout_seconds)
@@ -141,9 +147,17 @@ class Orchestrator:
 
     def _make_event_handler(self, gate: str):
         def handler(_topic: str, message: Envelope) -> None:
+            if self.rfid_only and message.method != METHOD_READ_CARD:
+                log.debug(
+                    "gate %s: rfid-only, ignoring %s", gate, message.method
+                )
+                return
             if message.method == METHOD_INPUT_INFO:
                 with self._locks[gate]:
                     self._on_inputs(gate, message)
+            elif message.method == METHOD_READ_CARD:
+                with self._locks[gate]:
+                    self._on_card(gate, message)
             elif message.method in (METHOD_TX_UART_DATA, METHOD_OUTPUT_CTRL):
                 log.debug("gate %s: controller acked %s", gate, message.method)
             else:
@@ -208,6 +222,86 @@ class Orchestrator:
 
         self.bus.publish_raw(gate_status_topic(gate), signage(STATUS_THANKS))
         self._open(gate)
+
+    def _on_card(self, gate: str, message: Envelope) -> None:
+        """An RFID tag was presented. Resolve it to a member and open the gate.
+
+        A member entry creates no paper ticket, so there is no orphan risk from
+        repeat taps, but a debounce still stops a double-tap opening twice.
+        """
+        card_no = str(message.get("cardNo") or "").strip()
+        if not card_no:
+            log.warning("gate %s: readCard with no cardNo", gate)
+            return
+
+        lane = self.lanes[gate]
+        now = time.monotonic()
+        window = self.config.policies.button_debounce_seconds
+        if lane.last_ticket_code and (now - lane.last_ticket_at) < window:
+            log.info(
+                "gate %s: repeat card tap within %.0fs, ignoring",
+                gate,
+                window,
+            )
+            return
+
+        member = self._request_member_entry(gate, card_no, message.serial_no)
+        if member is None:
+            log.warning("gate %s: member entry refused for card %s", gate, card_no)
+            return
+
+        lane.last_ticket_code = member.get("kode_tiket")
+        lane.last_ticket_at = now
+        lane.tickets_issued += 1
+
+        log.info(
+            "gate %s: member %s entered on card %s (ticket %s)",
+            gate,
+            member.get("name"),
+            card_no,
+            member.get("kode_tiket"),
+        )
+        self.bus.publish_raw(gate_status_topic(gate), signage(STATUS_THANKS))
+        self._open(gate)
+
+    def _request_member_entry(
+        self, gate: str, card_no: str, serial_no: str
+    ) -> dict | None:
+        """POST /api/gatein/card. None when the card is refused or the API fails."""
+        try:
+            response = self.http.post(
+                f"{self.config.api.base_url}/api/gatein/card",
+                json={
+                    "gate": gate,
+                    "card_no": card_no,
+                    "serialNo": serial_no,
+                    "vehicle_id": self.vehicle_id,
+                },
+                timeout=10,
+            )
+            if response.status_code == 404:
+                log.info("gate %s: card %s not a member", gate, card_no)
+                return None
+            if response.status_code == 403:
+                log.warning(
+                    "gate %s: card %s expired: %s",
+                    gate,
+                    card_no,
+                    response.json().get("message"),
+                )
+                return None
+            response.raise_for_status()
+            payload = response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            log.error("gate %s: /api/gatein/card failed: %s", gate, exc)
+            return None
+
+        if not payload.get("kode_tiket"):
+            log.error("gate %s: /api/gatein/card returned no ticket: %s", gate, payload)
+            return None
+
+        log.info("gate %s: member entry accepted for card %s", gate, card_no)
+        return payload
 
     def _read_plate(self, gate: str) -> tuple[str, str]:
         """Ask the entry LPR what it can see.
@@ -385,6 +479,12 @@ def main() -> None:
         help="vehicle class to record for every entry (1=Motor, 2=Mobil)",
     )
     parser.add_argument("--log-level", default="info")
+    parser.add_argument(
+        "--rfid-only",
+        action="store_true",
+        help="react only to readCard; ignore arrival and ticket-button events "
+        "(safe for on-site testing alongside the live system)",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -393,7 +493,9 @@ def main() -> None:
     )
 
     config = load_config(args.env)
-    orchestrator = Orchestrator(config, vehicle_id=args.vehicle_id)
+    orchestrator = Orchestrator(
+        config, vehicle_id=args.vehicle_id, rfid_only=args.rfid_only
+    )
     orchestrator.start()
 
     stop = threading.Event()

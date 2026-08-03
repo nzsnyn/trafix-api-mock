@@ -394,6 +394,13 @@ The controller also publishes a cumulative `status` heartbeat (roughly every 50 
 {"method":"status","serialNo":"441D6491AF17","data":{"input1":0,"input2":0,"input3":0,"input4":0,"relay1":0,"relay2":0,"relay3":0,"beep":0}}
 ```
 
+Tapping an RFID card publishes a `readCard` event (no ack follows):
+```json
+{"method":"readCard","serialNo":"441D6491AF17","data":{"reader":1,"cardLen":10,"cardNo":"006343040"}}
+```
+`cardNo` is a string (leading zero significant); `cardLen` is the reader's buffer length,
+not `len(cardNo)`.
+
 **Failure modes:**
 - `No messages` — controller not connected to MQTT, or serial number mismatch
 - `Wrong `serialNo`` — update `config/devices.yaml` with the real serial
@@ -482,6 +489,17 @@ Follow the complete check-in sequence from `flow.md §5`:
 
 **Pass criteria:** Physical ticket printed with correct site info, QR code, and plate. Barrier opens. Transaction appears in database.
 
+**Member auto-entry (RFID, no ticket):**
+
+| # | Action | Expected MQTT / HTTP | Check |
+|---|--------|---------------------|-------|
+| 1 | Member taps card on the reader | `readCard {"cardNo":"006343040"}` on `/GATE/event/1` | Tail shows it |
+| 2 | Server resolves the card | `POST /api/gatein/card` → `{"status":"success"}` | Orchestrator log |
+| 3 | Barrier opens | `outputCtrl relay1+beep` on `/GATE/IN/1` | Physical barrier rises |
+| 4 | No ticket printed | — | Nothing ejected |
+
+`trafix --env site card --card 006343040` triggers a `readCard` in the simulator.
+
 ```bash
 # Check the transaction was created
 trafix --env site txn list
@@ -549,6 +567,7 @@ trafix --env site txn show <code> | grep -A 20 events
 - [ ] Entry LPR `.130`: `/checklpr` returns plates, serves images
 - [ ] Exit LPR `.149`: publishes plates on `gate/out/1/pos`
 - [ ] Entry gate `.204`: publishes `inputInfo` on `/GATE/event/1`
+- [ ] Entry gate `.204`: `readCard` fires when an RFID card is tapped
 - [ ] Cameras `.148`/`.150`: serve JPEG snapshots at correct path
 - [ ] Exit gate: identified and configured (or manual operation confirmed)
 - [ ] `devices.yaml` updated with correct IPs, ports, serial numbers

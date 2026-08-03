@@ -70,6 +70,47 @@ async def gatein(request: Request) -> JSONResponse:
     )
 
 
+@router.post("/gatein/card")
+async def gatein_card(request: Request) -> JSONResponse:
+    """Member auto-entry: an RFID ``readCard`` tag resolved to a member.
+
+    Called by the orchestrator over loopback. No ticket is printed — the
+    member's subscription covers the stay.
+    """
+    body = await _body(request)
+    result = _service(request).member_gate_in(
+        gate=str(body.get("gate", "1")),
+        card_no=str(
+            body.get("card_no") or body.get("cardNo") or body.get("card") or ""
+        ),
+        serial_no=str(body.get("serialNo") or body.get("serial_no") or ""),
+        vehicle_id=_int(body.get("vehicle_id")),
+    )
+    if result.status == service.STATUS_NOT_FOUND:
+        return _json(
+            {"status": "member_notfound", "message": result.message},
+            status_code=404,
+        )
+    if result.status == service.STATUS_MEMBER_EXPIRED:
+        return _json(
+            {
+                "status": "member_expired",
+                "message": result.message,
+                "name": result.member_name,
+            },
+            status_code=403,
+        )
+    return _json(
+        {
+            "status": result.status,
+            "kode_tiket": result.transaction_code,
+            "member_code": result.member_code,
+            "name": result.member_name,
+            "police_number": result.plate,
+        }
+    )
+
+
 # ---------------------------------------------------------------------------
 # Exit — the automated LPR path
 # ---------------------------------------------------------------------------

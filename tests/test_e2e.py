@@ -181,6 +181,27 @@ def exit_read(plate: str, gate: str = EXIT_GATE) -> None:
     )
 
 
+def card_in(card: str, gate: str = ENTRY_GATE) -> None:
+    """Tap an RFID card at the entry, through the mock controller."""
+    global _last_press
+
+    remaining = DEBOUNCE_SECONDS - (time.monotonic() - _last_press)
+    if remaining > 0:
+        time.sleep(remaining)
+
+    subprocess.run(
+        [
+            PYTHON, "-m", "cli.trafix", "--env", E2E_ENV,
+            "card", "--gate", gate, "--card", card,
+        ],
+        cwd=PROJECT_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    _last_press = time.monotonic()
+
+
 def wait_for(predicate, timeout: float = 20.0, interval: float = 0.3):
     deadline = time.time() + timeout
     last = None
@@ -197,6 +218,15 @@ def find_by_plate(plate: str):
         return session.scalar(
             select(Transactions)
             .where(Transactions.police_number == plate)
+            .order_by(Transactions.transaction_id.desc())
+        )
+
+
+def find_by_card(card: str):
+    with db.session_scope() as session:
+        return session.scalar(
+            select(Transactions)
+            .where(Transactions.card_number == card)
             .order_by(Transactions.transaction_id.desc())
         )
 
@@ -283,6 +313,22 @@ def test_repeat_button_press_does_not_issue_two_tickets(system):
     time.sleep(3)
 
     assert count_transactions() == after_first
+
+
+def test_an_rfid_card_opens_the_gate_for_a_member(system):
+    """readCard -> /api/gatein/card -> member transaction, no ticket print."""
+    card = "006343040"
+    card_in(card)
+
+    transaction = wait_for(lambda: find_by_card(card))
+
+    assert transaction.transaction_code
+    assert transaction.type == "member"
+    assert transaction.card_number == card
+    assert transaction.payment_status == "lunas"
+    assert transaction.total == 0
+    assert transaction.gate_in == ENTRY_GATE
+    assert transaction.status == "gatein"
 
 
 def test_the_cashier_can_settle_and_release(system):

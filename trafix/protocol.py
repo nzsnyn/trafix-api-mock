@@ -64,6 +64,7 @@ METHOD_TX_UART_DATA = "txUartData"  # print bytes to the thermal printer
 METHOD_OUTPUT_CTRL = "outputCtrl"  # actuate a relay and/or the beeper
 METHOD_INPUT_INFO = "inputInfo"  # sensor state change (controller -> server)
 METHOD_STATUS = "status"  # controller status report
+METHOD_READ_CARD = "readCard"  # an RFID tag was presented to the card reader
 
 # ---------------------------------------------------------------------------
 # Sensor inputs on the gate controller.
@@ -239,6 +240,23 @@ def controller_status(
         data[f"relay{r}"] = int((relays or {}).get(f"relay{r}", 0))
     data["beep"] = int(beep)
     return Envelope(method=METHOD_STATUS, serial_no=serial_no, data=data, task_no=2)
+
+
+def read_card(serial_no: str, card_no: str, *, reader: int = 1, card_len: int = 10) -> Envelope:
+    """An RFID tag presented to the card reader.
+
+    Observed on site 2026-08-04 as ``{"method":"readCard","data":{"reader":1,
+    "cardLen":10,"cardNo":"006343040"}}``. ``cardLen`` is the reader's fixed
+    buffer length (10) — not ``len(cardNo)``, which is 9 here. ``cardNo`` is a
+    string: the leading zero is significant. No ack follows; it is a
+    one-way event, not a command.
+    """
+    return Envelope(
+        method=METHOD_READ_CARD,
+        serial_no=serial_no,
+        data={"reader": int(reader), "cardLen": int(card_len), "cardNo": str(card_no)},
+        task_no=2,
+    )
 
 
 def ack(serial_no: str, method: str) -> Envelope:

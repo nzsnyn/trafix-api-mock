@@ -19,6 +19,7 @@ from trafix.models import (
     XenditQrPool,
 )
 from trafix.service import (
+    STATUS_MEMBER_EXPIRED,
     STATUS_NOT_FOUND,
     STATUS_PLATE_MISMATCH,
     STATUS_SUCCESS,
@@ -320,6 +321,59 @@ def test_a_member_pays_nothing(service, clock, session_factory):
     assert result.status == STATUS_SUCCESS_MEMBER
     assert result.total == 0
     assert result.member_name == "Angelo"
+
+
+def test_member_card_entry_creates_a_paid_no_print_transaction(
+    service, session_factory, publisher
+):
+    result = service.member_gate_in(
+        gate="1", card_no="006343040", serial_no="441D6491AF17", vehicle_id=1
+    )
+
+    assert result.status == STATUS_SUCCESS
+    assert result.member_name == "Angelo"
+    assert result.plate == "H4818AI"
+    assert publisher.printed == []  # members get no paper ticket
+
+    with session_factory() as session:
+        row = session.scalar(
+            select(Transactions).where(
+                Transactions.transaction_code == result.transaction_code
+            )
+        )
+        assert row.card_number == "006343040"
+        assert row.police_number == "H4818AI"
+        assert row.type == "member"
+        assert row.payment_status == PAYMENT_PAID
+        assert row.total == 0
+        assert row.status == "gatein"
+        assert row.gate_status == GATE_STATUS_IN
+        assert row.gate_in == "1"
+
+
+def test_member_card_entry_rejects_unknown_card(service):
+    result = service.member_gate_in(
+        gate="1", card_no="999999999", serial_no="x", vehicle_id=1
+    )
+    assert result.status == STATUS_NOT_FOUND
+    assert result.transaction_code is None
+
+
+def test_member_card_entry_rejects_an_expired_subscription(service, session_factory):
+    with session_factory() as session:
+        member = session.scalar(select(Members))
+        member.time_limit = datetime.today().date() - timedelta(days=1)
+        session.commit()
+
+    result = service.member_gate_in(
+        gate="1", card_no="006343040", serial_no="x", vehicle_id=1
+    )
+    assert result.status == STATUS_MEMBER_EXPIRED
+
+
+def test_member_card_entry_rejects_empty_card(service):
+    result = service.member_gate_in(gate="1", card_no="", serial_no="x")
+    assert result.status == STATUS_NOT_FOUND
 
 
 # -- quoting ----------------------------------------------------------------

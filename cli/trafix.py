@@ -36,6 +36,7 @@ SIM_ARRIVE = "arrive"
 SIM_PRESS = "press"
 SIM_PASS = "pass"
 SIM_CYCLE = "cycle"
+SIM_CARD = "card"
 SIM_SET = "set"
 SIM_READ_PLATE = "read_plate"
 
@@ -115,6 +116,12 @@ def cmd_exit_read(args, config) -> None:
     """The exit LPR spots a plate and announces it."""
     _send(config, lpr_sim_topic(args.gate), SIM_READ_PLATE, plate=args.plate or "")
     print(f"gate {args.gate}: exit camera read {args.plate or '(random)'}")
+
+
+def cmd_card(args, config) -> None:
+    """A member taps an RFID card at the entry gate."""
+    _send(config, controller_sim_topic(args.gate), SIM_CARD, card_no=args.card)
+    print(f"gate {args.gate}: RFID card {args.card} presented")
 
 
 def _relay_key(name: str) -> str:
@@ -385,6 +392,11 @@ def build_parser() -> argparse.ArgumentParser:
     exit_read.add_argument("--gate", default="2")
     exit_read.add_argument("--plate")
     exit_read.set_defaults(func=cmd_exit_read)
+
+    card = sub.add_parser("card", help="member taps an RFID card at the entry")
+    card.add_argument("--gate", default="1")
+    card.add_argument("--card", default="006343040", help="RFID tag number (string)")
+    card.set_defaults(func=cmd_card)
 
     gate = sub.add_parser("gate", help="pulse a relay on a gate controller")
     gate.add_argument("--gate", default="1")

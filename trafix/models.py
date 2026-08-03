@@ -169,6 +169,10 @@ class Members(Base):
     email: Mapped[str] = mapped_column(String(255), default="")
     police_number: Mapped[str] = mapped_column(String(255), index=True)
     member_code: Mapped[str] = mapped_column(String(255), index=True)
+    # The RFID tag a ``readCard`` event carries (cardNo). String — the leading
+    # zero is significant. Added for member auto-entry; not present on the live
+    # site's members table (flow.md §5), so it is nullable.
+    card_number: Mapped[str | None] = mapped_column(String(255), index=True, nullable=True)
     subscription_period: Mapped[str] = mapped_column(String(255), default="")
     time_limit: Mapped[Date] = mapped_column(Date)
     vehicle_id: Mapped[int | None] = mapped_column(Integer, nullable=True)

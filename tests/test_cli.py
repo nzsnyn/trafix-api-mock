@@ -81,3 +81,13 @@ def test_gate_without_a_configured_controller_warns_and_uses_empty_serial(
 def test_gate_rejects_unknown_relays(bus, config):
     with pytest.raises(SystemExit):
         trafix.cmd_gate(_args(relay="relay9"), config)
+
+
+def test_card_sends_the_sim_command_to_the_controller(bus, config):
+    args = argparse.Namespace(gate="1", card="006343040")
+    trafix.cmd_card(args, config)
+
+    (topic, envelope), = bus.published
+    assert topic == "trafix/sim/controller/1"
+    assert envelope.method == "card"
+    assert envelope.get("card_no") == "006343040"

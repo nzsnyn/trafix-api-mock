@@ -150,6 +150,9 @@ def seed(session: Session, *, include_demo_member: bool = True) -> None:
 
     if include_demo_member and session.scalar(select(Members).limit(1)) is None:
         # 'Angelo' / H4818AI is real data from the captured API response.
+        # card_number 006343040 is the RFID tag observed on the wire
+        # (flow.md §5, readCard) — the demo member owns it so member
+        # auto-entry can be exercised end to end.
         session.add(
             Members(
                 name="Angelo",
@@ -157,6 +160,7 @@ def seed(session: Session, *, include_demo_member: bool = True) -> None:
                 email="",
                 police_number="H4818AI",
                 member_code="H4818AI",
+                card_number="006343040",
                 subscription_period="monthly",
                 time_limit=date.today() + timedelta(days=365),
                 vehicle_id=VEHICLE_MOTOR,
