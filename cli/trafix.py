@@ -160,6 +160,25 @@ def cmd_gate(args, config) -> None:
     print(envelope.to_json())
 
 
+def cmd_out_gate(args, config) -> None:
+    """Open the exit barrier — the same outputCtrl the API sends on settlement."""
+    try:
+        serial = config.controller_for(args.gate).serial_no
+    except ConfigError:
+        serial = ""
+        print(
+            f"warning: no controller configured for gate {args.gate} "
+            "(publishing with an empty serialNo)",
+            file=sys.stderr,
+        )
+    envelope = open_barrier(serial)
+    bus = _bus(config, "cli-out")
+    bus.publish(gate_out_topic(args.gate), envelope)
+    time.sleep(0.3)
+    bus.disconnect()
+    print(f"gate {args.gate}: exit barrier opened")
+
+
 def _queue_plate(config: Config, gate: str, plate: str) -> None:
     lpr = config.lpr_for(gate)
     if not lpr.serves_http:
@@ -392,6 +411,10 @@ def build_parser() -> argparse.ArgumentParser:
     exit_read.add_argument("--gate", default="2")
     exit_read.add_argument("--plate")
     exit_read.set_defaults(func=cmd_exit_read)
+
+    out_gate = sub.add_parser("out-gate", help="open the exit barrier")
+    out_gate.add_argument("--gate", default="2")
+    out_gate.set_defaults(func=cmd_out_gate)
 
     card = sub.add_parser("card", help="member taps an RFID card at the entry")
     card.add_argument("--gate", default="1")

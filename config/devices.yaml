@@ -51,9 +51,9 @@ environments:
       lpr_out:
         gate: "2"
         host: 192.168.1.148
-        port: 8091
-        base_url: http://192.168.1.149:8090
-        public_url: http://192.168.1.149:8090
+        port: 8000
+        base_url: http://192.168.1.148:8000
+        public_url: http://192.168.1.149:8000
         # On site this is false — .149 accepts no TCP connections at all
         # (flow.md §7.2). Left true here so the simulator exercises the
         # working path; set false to reproduce the production failure.

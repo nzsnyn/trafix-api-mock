@@ -76,6 +76,7 @@ trafix status                          # is every component reachable?
 trafix enter --plate 'H 488 AI'        # the whole entry sequence
 trafix arrive / trafix press / trafix pass    # or step it manually
 trafix exit-read --plate 'H 488 AI'    # exit camera announces a plate
+trafix out-gate                        # open the exit barrier, no payment
 trafix txn list [--inside]             # the ledger
 trafix txn show <ticket|plate>         # one session and its event trail
 trafix tail                            # live MQTT traffic

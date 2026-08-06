@@ -83,6 +83,16 @@ def test_gate_rejects_unknown_relays(bus, config):
         trafix.cmd_gate(_args(relay="relay9"), config)
 
 
+def test_out_gate_opens_the_exit_barrier(bus, config):
+    trafix.cmd_out_gate(argparse.Namespace(gate="2"), config)
+
+    (topic, envelope), = bus.published
+    assert topic == "/GATE/OUT/2"
+    assert envelope.method == METHOD_OUTPUT_CTRL
+    assert envelope.serial_no == "441D6491AF18"
+    assert envelope.data == {"relay1Out": [1, 1000], "beepOut": [1, 100]}
+
+
 def test_card_sends_the_sim_command_to_the_controller(bus, config):
     args = argparse.Namespace(gate="1", card="006343040")
     trafix.cmd_card(args, config)
