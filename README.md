@@ -210,9 +210,14 @@ Denda inap motor Rp10000 mobil Rp25000
 | Endpoint | Method | Production | Here |
 |---|---|---|---|
 | `/api/gatein` | POST | ✅ (over loopback) | ✅ |
+| `/api/gatein/card` | POST | ✅ | ✅ |
+| `/api/lpr/gatein` | POST | ✅ | ✅ |
+| `/api/lpr/gateinimage` | POST | ✅ | ✅ |
+| `/api/lpr/checkimage` | POST | ✅ | ✅ |
 | `/api/gateout/detailtransaction` | POST | ✅ 200 | ✅ |
 | `/api/gateout/gateoutKasir` | PUT | ✅ 200 | ✅ + opens the barrier |
 | `/api/lpr/gateout` | POST | ❌ **500** | ✅ **implemented** |
+| `/api/lpr/gateoutcard` | PUT | ✅ | ✅ |
 | `/api/lpr/checkimagegateout` | POST | ❌ 404 | ✅ |
 | `.130:8090/checklpr` | GET | ✅ 200 | mocked |
 

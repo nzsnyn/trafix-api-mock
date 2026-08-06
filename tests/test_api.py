@@ -17,6 +17,8 @@ PLATE = "H488AI"
 
 @pytest.fixture
 def app(session_factory, publisher, clock, tmp_path):
+    from trafix.storage import SnapshotStore
+
     config = SimpleNamespace(
         env="test",
         policies=SimpleNamespace(
@@ -26,7 +28,11 @@ def app(session_factory, publisher, clock, tmp_path):
         ),
     )
     service = ParkingService(
-        session_factory, publisher=publisher, clock=clock, print_gap_seconds=0
+        session_factory,
+        publisher=publisher,
+        clock=clock,
+        print_gap_seconds=0,
+        storage=SnapshotStore(config.policies.storage_dir),
     )
     return create_app(config, service)
 
@@ -70,6 +76,111 @@ def test_gatein_without_a_plate_still_issues_a_ticket(client):
     body = enter(client, plate="")
     assert body["status"] == "success"
     assert body["kode_tiket"]
+
+
+# -- the LPR-driven entry routes ---------------------------------------------
+
+
+def test_lpr_gatein_creates_a_transaction(client):
+    response = client.post(
+        "/api/lpr/gatein",
+        data={"plate_num": PLATE},
+        files={"image": ("CAMIN_LPR.jpg", b"\xff\xd8\xff\xe0fakejpeg", "image/jpeg")},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "success"
+    assert len(body["transaction_code"]) == 10
+
+
+def test_lpr_gatein_requires_plate_and_image(client):
+    no_plate = client.post(
+        "/api/lpr/gatein", files={"image": ("a.jpg", b"x", "image/jpeg")}
+    )
+    assert no_plate.status_code == 400
+    assert no_plate.json()["message"] == "Missing image or plate_num"
+
+    no_image = client.post("/api/lpr/gatein", data={"plate_num": PLATE})
+    assert no_image.status_code == 400
+
+
+def test_lpr_gateinimage_attaches_to_an_open_ticket(client, clock):
+    ticket = enter(client)
+    clock.advance(minutes=5)
+    response = client.post(
+        "/api/lpr/gateinimage",
+        data={"transaction_code": ticket["kode_tiket"], "plate_num": PLATE},
+        files={"image": ("CAMIN_LPR_2.jpg", b"\xff\xd8fake", "image/jpeg")},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "success"
+    assert body["camin_lpr"].startswith("storage/")
+    assert body["transaction_code"] == ticket["kode_tiket"]
+
+
+def test_lpr_gateinimage_404s_for_an_unknown_ticket(client):
+    response = client.post(
+        "/api/lpr/gateinimage",
+        data={"transaction_code": "0000000000"},
+        files={"image": ("a.jpg", b"x", "image/jpeg")},
+    )
+    assert response.status_code == 404
+    assert response.json()["message"] == "Transaction not found"
+
+
+def test_lpr_checkimage_reports_a_reachable_image(client, clock, monkeypatch):
+    enter(client)
+    clock.advance(minutes=30)
+
+    class _Probe:
+        is_success = True
+        status_code = 200
+        headers = {"content-type": "image/jpeg"}
+
+    monkeypatch.setattr("trafix.api.httpx.get", lambda url, **kw: _Probe())
+    response = client.post(
+        "/api/lpr/checkimage",
+        data={"plate_num": PLATE, "url_image": "http://lpr/image.jpg"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "success"
+    assert body["message"] == "Image is available"
+    assert body["transaction_code"]
+
+
+def test_lpr_checkimage_rejects_a_non_image_url(client, clock, monkeypatch):
+    enter(client)
+    clock.advance(minutes=30)
+
+    class _NotImage:
+        is_success = True
+        status_code = 200
+        headers = {"content-type": "text/html"}
+
+    monkeypatch.setattr("trafix.api.httpx.get", lambda url, **kw: _NotImage())
+    response = client.post(
+        "/api/lpr/checkimage",
+        data={"plate_num": PLATE, "url_image": "http://lpr/page.html"},
+    )
+    assert response.status_code == 400
+    assert response.json()["message"] == "URL is reachable but not an image"
+
+
+def test_lpr_checkimage_404s_without_an_open_session(client):
+    response = client.post(
+        "/api/lpr/checkimage",
+        data={"plate_num": "NOPE", "url_image": "http://lpr/x.jpg"},
+    )
+    assert response.status_code == 404
+    assert response.json()["message"] == "Active transaction not found for this plate_num"
+
+
+def test_lpr_checkimage_requires_url_and_plate(client):
+    response = client.post("/api/lpr/checkimage", data={"plate_num": PLATE})
+    assert response.status_code == 400
+    assert response.json()["message"] == "Missing url_image or plate_num"
 
 
 # -- the endpoint that is broken in production ------------------------------
@@ -194,7 +305,10 @@ def test_gateoutkasir_accepts_form_encoding_and_settles(client, clock, publisher
     )
 
     assert response.status_code == 200
-    assert response.json()["status"] == "success_ticket"
+    body = response.json()
+    assert body["status"] == "success"
+    assert body["status_code"] == 200
+    assert body["data"]["total"] > 0
     assert publisher.barriers == [("2", True)], "production never opens the exit (§7.6)"
 
 
@@ -238,6 +352,19 @@ def test_member_response_carries_the_member_discriminator(
 # -- checkimagegateout ------------------------------------------------------
 
 
+def test_checkimagegateout_returns_the_laravel_nested_shape(client, clock):
+    enter(client)
+    clock.advance(minutes=30)
+    response = client.post("/api/lpr/checkimagegateout", params={"plate_num": PLATE})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "success"
+    assert {"image", "gatein", "gateout"} <= set(body)
+    assert body["gatein"]["transaction_code"]
+    assert body["gatein"]["police_number"] == PLATE
+    assert body["image"] == {"available": False, "message": "No url_image provided", "url_image": None}
+
+
 def test_checkimagegateout_finds_a_parked_car(client, clock):
     enter(client)
     clock.advance(minutes=30)
@@ -249,6 +376,65 @@ def test_checkimagegateout_404s_like_the_real_one(client):
     response = client.post("/api/lpr/checkimagegateout", params={"plate_num": "NOPE"})
     assert response.status_code == 404
     assert "not found" in response.json()["message"].lower()
+
+
+# -- the automated RFID exit (PUT /api/lpr/gateoutcard) ----------------------
+
+
+def test_lpr_gateoutcard_resolves_a_member(client, clock):
+    entered = client.post(
+        "/api/gatein/card",
+        json={
+            "gate": "1",
+            "card_no": "006343040",
+            "serialNo": "441D6491AF17",
+            "vehicle_id": 1,
+        },
+    )
+    assert entered.status_code == 200
+
+    clock.advance(hours=1)
+    response = client.put(
+        "/api/lpr/gateoutcard",
+        data={
+            "card": "006343040",
+            "gate_out": "2",
+            "plate_num": "H4818AI",
+            "url_gambar": "",
+        },
+    )
+    assert response.status_code == 200
+    assert response.json() == {"status": "success_member"}
+
+
+def test_lpr_gateoutcard_resolves_a_ticket(client, clock):
+    ticket = enter(client)
+    clock.advance(hours=1)
+    response = client.put(
+        "/api/lpr/gateoutcard",
+        data={"card": ticket["kode_tiket"], "gate_out": "2", "plate_num": PLATE},
+    )
+    assert response.status_code == 200
+    assert response.json() == {"status": "success_ticket"}
+
+
+def test_lpr_gateoutcard_reports_an_unknown_card(client):
+    response = client.put(
+        "/api/lpr/gateoutcard",
+        data={"card": "0000000001", "gate_out": "2", "plate_num": "ZZ9999ZZ"},
+    )
+    assert response.status_code == 200
+    assert response.json() == {"status": "failed_member"}
+
+
+def test_lpr_gateoutcard_refuses_a_used_ticket(client, clock):
+    ticket = enter(client)
+    clock.advance(hours=1)
+    client.put("/api/lpr/gateoutcard", data={"card": ticket["kode_tiket"], "gate_out": "2"})
+    again = client.put(
+        "/api/lpr/gateoutcard", data={"card": ticket["kode_tiket"], "gate_out": "2"}
+    )
+    assert again.json() == {"status": "ticket_used"}
 
 
 # -- CORS, which the Tauri app depends on -----------------------------------

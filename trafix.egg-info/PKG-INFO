@@ -52,24 +52,87 @@ one laptop with no hardware attached.
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
+.venv/bin/pip install -r requirements.txt   # installs the project + the commands
+source .venv/bin/activate
 
 docker compose up -d mosquitto postgres
 ./run_sim.sh --fresh
 ```
 
-In another terminal:
+In another terminal (with the venv activated):
 
 ```bash
-.venv/bin/python -m cli.trafix status
-.venv/bin/python -m cli.trafix enter --plate 'H 488 AI'   # a vehicle takes a ticket
-.venv/bin/python -m cli.trafix txn list
+trafix status
+trafix enter --plate 'H 488 AI'      # a vehicle takes a ticket and drives in
+trafix txn list
 
-.venv/bin/python -m cli.cashier lookup --ticket <code>    # what does it owe?
-.venv/bin/python -m cli.cashier settle --ticket <code> -y # take payment, open the exit
+trafix-cashier lookup --ticket <code>     # what does it owe?
+trafix-cashier settle --ticket <code> -y  # take payment, open the exit
 ```
 
-`cli.trafix tail` shows every MQTT message as it happens.
+`trafix tail` shows every MQTT message as it happens.
+
+## The commands
+
+`pip install -e .` puts six commands on PATH. They work from any directory.
+
+| Command | What it is |
+|---|---|
+| `trafix` | drive and inspect the simulated site |
+| `trafix-cashier` | the exit desk — stands in for the Tauri app at `.2` |
+| `trafix-server` | the API server (the Laravel app's replacement) |
+| `trafix-orchestrator` | the MQTT component missing from production |
+| `trafix-lpr` | a mock LPR camera unit |
+| `trafix-controller` | a mock gate controller board |
+
+Every one accepts `--env` (`sim`, `e2e`, `site`). Without installing, the
+equivalent `python -m cli.trafix`, `python -m trafix.server`, `python -m
+mocks.lpr_unit` … forms all still work.
+
+### Driving the site
+
+```bash
+trafix status                          # is every component reachable?
+trafix enter --plate 'H 488 AI'        # the whole entry sequence
+trafix arrive / trafix press / trafix pass    # or step it manually
+trafix exit-read --plate 'H 488 AI'    # exit camera announces a plate
+trafix txn list [--inside]             # the ledger
+trafix txn show <ticket|plate>         # one session and its event trail
+trafix tail                            # live MQTT traffic
+```
+
+Fault injection, to see how the system degrades:
+
+```bash
+trafix lpr --gate 1 --mode error       # camera returns 503
+trafix lpr --gate 1 --mode no_plate    # camera reads nothing
+trafix lpr --gate 1 --queue 'B 1234 XYZ'   # force the next read
+trafix lpr --gate 1 --mode ok          # back to normal
+```
+
+### The cashier desk
+
+```bash
+trafix-cashier lookup --ticket <code>       # price it, read-only
+trafix-cashier settle --ticket <code> [-y]  # take payment, release the vehicle
+trafix-cashier lost --plate 'H 488 AI'      # lost ticket, flat penalty
+```
+
+**What needs what:** `status` and `txn` need only PostgreSQL. `enter`, `press`,
+`exit-read` and `lpr` need the broker plus the mocks and orchestrator.
+`trafix-cashier` needs the API server.
+
+### Finding the configuration
+
+`devices.yaml` is looked up in this order, so an installed command works from
+anywhere and a site deployment can keep its config outside the source tree:
+
+1. `$TRAFIX_CONFIG` — full path to a `devices.yaml`
+2. `./config/devices.yaml` relative to the current directory
+3. the `config/` directory in this source tree
+
+`$TRAFIX_STORAGE` overrides where snapshots are written; otherwise a relative
+`storage_dir` resolves next to whichever `config/` was used.
 
 ---
 
@@ -207,8 +270,9 @@ Arrival to barrier is about 4.4 s on site; the full cycle about 10 s.
 | `site` | the real `192.168.1.x` addresses |
 
 The `site` block reproduces two known device faults so you can see how the
-system degrades: `lpr_out.serves_http: false` (the real `.149` accepts zero TCP
-connections) and the corrected Uniview snapshot path.
+system degrades: `lpr_out.serves_http: false` (the real `.149:8090` is POST-only
+and rejects GET — the advertised image URL still can't be fetched) and the
+corrected Uniview snapshot path.
 
 ⚠️ **Before deploying to site**, settle the open questions in flow.md §11 —
 above all: where is the existing orchestrator, and does it need stopping before
@@ -223,6 +287,8 @@ this one starts? Two publishers sharing a fixed MQTT client ID evict each other.
 docker compose up -d mosquitto postgres
 .venv/bin/python -m pytest tests/test_e2e.py    # the whole site, real processes
 ```
+
+All 124 pass with both services up.
 
 | File | Covers |
 |---|---|
@@ -258,5 +324,10 @@ cli/
   trafix.py        drive and inspect the simulator
   cashier.py       stands in for the Tauri app at .2
 config/devices.yaml
+pyproject.toml     packaging + the six console commands
 greenfield_prototype/  an earlier clean-slate design, kept for reference only
 ```
+
+`cli` and `mocks` are top-level package names. Inside this project's own venv
+that is harmless. If this is ever published to a package index, move them under
+`trafix/` (`trafix.cli`, `trafix.mocks`) to avoid claiming generic names.

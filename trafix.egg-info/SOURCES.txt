@@ -8,8 +8,10 @@ mocks/gate_controller.py
 mocks/lpr_unit.py
 mocks/plate_image.py
 tests/test_api.py
+tests/test_cli.py
 tests/test_e2e.py
 tests/test_escpos.py
+tests/test_orchestrator.py
 tests/test_protocol.py
 tests/test_rates.py
 tests/test_service.py

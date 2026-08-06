@@ -15,6 +15,7 @@ import random
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Callable, Protocol
 
 from sqlalchemy import select
@@ -51,6 +52,7 @@ STATUS_NOT_FOUND = "notfound"
 STATUS_ALREADY_PAID = "already_paid"
 STATUS_PLATE_MISMATCH = "plate_mismatch"
 STATUS_MEMBER_EXPIRED = "member_expired"
+STATUS_FAILED_MEMBER = "failed_member"
 
 
 class Publisher(Protocol):
@@ -118,6 +120,12 @@ class GateOutResult:
     cam_out: str | None = None
     breakdown: str = ""
     message: str | None = None
+    vehicle_id: int | None = None
+    admin_id: int | None = None
+    shift_id: int | None = None
+    payment_status: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -126,6 +134,28 @@ class GateOutResult:
             STATUS_SUCCESS_MEMBER,
             STATUS_SUCCESS_TICKET,
         )
+
+
+@dataclass
+class LprGateOutQuote:
+    """The transaction facts ``checkLprImageGateOut`` answers with."""
+
+    status: str
+    transaction_id: int
+    transaction_code: str
+    police_number: str | None
+    card_number: str | None
+    vehicle_id: int | None
+    vehicle_name: str | None
+    time_checkin: str | None
+    gate_in: str | None
+    gate_status: str | None
+    payment_status: str | None
+    cam_in: str | None
+    camin_lpr: str | None
+    gate_out: str | None
+    cam_out: str | None
+    camout_lpr: str | None
 
 
 def now_string() -> str:
@@ -409,6 +439,133 @@ class ParkingService:
             plate=member.police_number,
         )
 
+    # -- LPR-direct entry (POST /api/lpr/gatein, POST /api/lpr/gateinimage) --
+
+    def _store_upload(self, filename: str, content: bytes) -> str:
+        """Persist a file an LPR unit uploaded directly.
+
+        Falls back to ``config.policies.storage_dir`` when no ``SnapshotStore``
+        was wired (tests). Returns the ``storage/<filename>`` value the
+        ``/storage`` mount serves back, matching ``storeAs('public', …)``.
+        """
+        if self.storage is not None:
+            return self.storage.save_upload(filename, content)
+        if self.config is not None:
+            target = Path(self.config.policies.storage_dir) / filename
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(content)
+            return f"storage/{filename}"
+        raise RuntimeError("no storage configured to accept an upload")
+
+    def lpr_gate_in(self, *, plate: str, image: bytes) -> GateInResult:
+        """Port of ``GateController::GateInLpr`` (:428).
+
+        The entry LPR unit reports a plate and uploads its photo; a transaction
+        is opened from that alone. No ticket is printed and no QR allocated —
+        the raw PHP creates the row and nothing else.
+        """
+        normalized = normalize_plate(plate)
+        with self.session_factory() as session:
+            transaction_code = self.generate_transaction_code(session)
+            filename = f"CAMIN_LPR_{transaction_code}_{int(time.time())}.jpg"
+            image_path = self._store_upload(filename, image)
+            checkin_at = self.clock().strftime(DATETIME_FORMAT)
+
+            transaction = Transactions(
+                transaction_code=transaction_code,
+                time_checkin=checkin_at,
+                status=STATUS_GATEIN,
+                gate_in="1",
+                gate_status=GATE_STATUS_IN,
+                police_number=normalized,
+                cam_in=image_path,
+                camin_lpr=image_path,
+            )
+            session.add(transaction)
+            session.flush()
+            transaction_id = transaction.transaction_id
+
+            self._log_event(
+                session,
+                source="api",
+                method="lpr-gatein",
+                gate="1",
+                transaction_code=transaction_code,
+                detail=f"plate={normalized}",
+            )
+            session.commit()
+
+        log.info("LPR gate-in: opened %s for plate %s", transaction_code, normalized)
+        return GateInResult(
+            status=STATUS_SUCCESS,
+            transaction_code=transaction_code,
+            transaction_id=transaction_id,
+            plate=normalized,
+            image_path=image_path,
+            type_qr=TYPE_QR_CASH,
+        )
+
+    def attach_gatein_image(
+        self, *, transaction_code: str, plate: str | None, image: bytes
+    ) -> dict:
+        """Port of ``GateController::GateinImageLpr`` (:387).
+
+        Attaches the LPR photo to an open session looked up by its ticket code
+        or member card, and records the plate read.
+        """
+        with self.session_factory() as session:
+            transaction = session.scalar(
+                select(Transactions)
+                .where(
+                    (Transactions.transaction_code == transaction_code)
+                    | (
+                        (Transactions.card_number == transaction_code)
+                        & Transactions.time_checkout.is_(None)
+                    )
+                )
+                .order_by(Transactions.updated_at.desc())
+                .limit(1)
+            )
+            if transaction is None:
+                return {"status": STATUS_NOT_FOUND, "message": "Transaction not found"}
+
+            filename = f"CAMIN_LPR_{transaction_code}_{int(time.time())}.jpg"
+            image_path = self._store_upload(filename, image)
+            normalized = normalize_plate(plate)
+            if normalized:
+                transaction.police_number = normalized
+            transaction.camin_lpr = image_path
+
+            self._log_event(
+                session,
+                source="api",
+                method="lpr-gateinimage",
+                gate=transaction.gate_in,
+                transaction_code=transaction.transaction_code,
+                detail=f"image={image_path}",
+            )
+            session.commit()
+
+        code = (
+            transaction.transaction_code
+            if transaction.transaction_code == transaction_code
+            else transaction.card_number
+        )
+        return {
+            "status": STATUS_SUCCESS,
+            "camin_lpr": image_path,
+            "transaction_code": code,
+        }
+
+    def find_open_plate_code(self, *, plate: str) -> str | None:
+        """Ticket code of the open session for a plate, else None.
+
+        Backs ``checkLprImage``; the URL probe itself stays in the HTTP layer.
+        """
+        with self.session_factory() as session:
+            transaction = self.find_open_transaction(session, plate=plate)
+            return transaction.transaction_code if transaction is not None else None
+
     def _allocate_qr(
         self,
         session: Session,
@@ -548,6 +705,40 @@ class ParkingService:
                 )
             return self._price(session, transaction, plate_out=plate, lost=lost)
 
+    def quote_gateout_image(self, *, plate: str) -> LprGateOutQuote | None:
+        """The transaction facts ``checkLprImageGateOut`` reports, or None.
+
+        Read-only plate lookup; the image availability probe is performed by
+        the HTTP layer because it is a side-effecting network call.
+        """
+        with self.session_factory() as session:
+            transaction = self.find_open_transaction(session, plate=plate)
+            if transaction is None:
+                return None
+            vehicle = None
+            if transaction.vehicle_id is not None:
+                vehicle = session.scalar(
+                    select(Vehicles).where(Vehicles.vehicle_id == transaction.vehicle_id)
+                )
+            return LprGateOutQuote(
+                status=STATUS_SUCCESS,
+                transaction_id=transaction.transaction_id,
+                transaction_code=transaction.transaction_code,
+                police_number=normalize_plate(transaction.police_number),
+                card_number=transaction.card_number,
+                vehicle_id=transaction.vehicle_id,
+                vehicle_name=vehicle.name if vehicle else None,
+                time_checkin=transaction.time_checkin,
+                gate_in=transaction.gate_in,
+                gate_status=transaction.gate_status,
+                payment_status=transaction.payment_status,
+                cam_in=transaction.cam_in,
+                camin_lpr=transaction.camin_lpr,
+                gate_out=transaction.gate_out,
+                cam_out=transaction.cam_out,
+                camout_lpr=transaction.camout_lpr,
+            )
+
     def _price(
         self,
         session: Session,
@@ -587,6 +778,9 @@ class ParkingService:
 
         is_member = rates.is_active_member(member, transaction.vehicle_id)
 
+        def _stamp(value: datetime | None) -> str | None:
+            return value.strftime(DATETIME_FORMAT) if value else None
+
         return GateOutResult(
             status=STATUS_SUCCESS_MEMBER if is_member else STATUS_SUCCESS,
             transaction_code=transaction.transaction_code,
@@ -602,6 +796,12 @@ class ParkingService:
             cam_in=transaction.cam_in,
             cam_out=transaction.cam_out,
             breakdown=fee.breakdown,
+            vehicle_id=transaction.vehicle_id,
+            admin_id=transaction.admin_id,
+            shift_id=transaction.shift_id,
+            payment_status=transaction.payment_status,
+            created_at=_stamp(transaction.created_at),
+            updated_at=_stamp(transaction.updated_at),
         )
 
     # -- check-out ---------------------------------------------------------
@@ -746,3 +946,140 @@ class ParkingService:
             }
         )
         return result
+
+    # -- the automated RFID exit (PUT /api/lpr/gateoutcard) -----------------
+
+    def gate_out_rfid(
+        self,
+        *,
+        card: str,
+        gate: str,
+        plate_num: str | None,
+        url_gambar: str | None,
+        admin_id: int | None = None,
+        shift_id: int | None = None,
+    ) -> str:
+        """Port of ``GateoutController::GateOutRfidLpr`` (:1603).
+
+        Returns only the sparse status string the route echoes back, exactly
+        like the PHP: ``success_member``, ``success_ticket``, ``ticket_used``
+        or ``failed_member``. The card is looked up as a member's ``card_number``
+        (with ``gate_status='in'``) before it is tried as a ticket code.
+        """
+        raw = str(card or "").strip()
+        padded = raw.zfill(10)  # str_pad(…, 10, '0', STR_PAD_LEFT)
+        lookups = [candidate for candidate in (raw, padded) if candidate]
+
+        with self.session_factory() as session:
+            member_transaction = session.scalar(
+                select(Transactions)
+                .where(
+                    Transactions.card_number.in_(lookups),
+                    Transactions.gate_status == GATE_STATUS_IN,
+                )
+                .order_by(Transactions.updated_at.desc())
+                .limit(1)
+            )
+            if member_transaction is not None:
+                self._settle_rfid(
+                    session,
+                    member_transaction,
+                    gate=gate,
+                    plate_num=plate_num,
+                    url_gambar=url_gambar,
+                    admin_id=admin_id,
+                    shift_id=shift_id,
+                )
+                session.commit()
+                return STATUS_SUCCESS_MEMBER
+
+            ticket_transaction = session.scalar(
+                select(Transactions)
+                .where(Transactions.transaction_code.in_(lookups))
+                .order_by(Transactions.updated_at.desc())
+                .limit(1)
+            )
+            if ticket_transaction is None:
+                self._log_event(
+                    session,
+                    source="api",
+                    method="gateout_rfid_notfound",
+                    gate=gate,
+                    detail=f"card={card!r}",
+                )
+                session.commit()
+                return STATUS_FAILED_MEMBER
+
+            if ticket_transaction.is_paid() and ticket_transaction.time_checkout is not None:
+                self._log_event(
+                    session,
+                    source="api",
+                    method="gateout_rfid_used",
+                    gate=gate,
+                    transaction_code=ticket_transaction.transaction_code,
+                )
+                session.commit()
+                return STATUS_TICKET_USED
+
+            self._settle_rfid(
+                session,
+                ticket_transaction,
+                gate=gate,
+                plate_num=plate_num,
+                url_gambar=url_gambar,
+                admin_id=admin_id,
+                shift_id=shift_id,
+            )
+            session.commit()
+            return STATUS_SUCCESS_TICKET
+
+    def _settle_rfid(
+        self,
+        session: Session,
+        transaction: Transactions,
+        *,
+        gate: str,
+        plate_num: str | None,
+        url_gambar: str | None,
+        admin_id: int | None,
+        shift_id: int | None,
+    ) -> None:
+        quote = self._price(session, transaction, plate_out=plate_num)
+
+        image_path = transaction.cam_out
+        if url_gambar and self.storage is not None:
+            image_path = self.storage.download_async(
+                url_gambar,
+                "lpr/gateout",
+                self.storage.lpr_filename(url_gambar, prefix="CAMOUT_LPR"),
+            )
+        elif url_gambar:
+            image_path = url_gambar
+
+        transaction.time_checkout = quote.time_checkout
+        transaction.total = quote.total
+        transaction.duration = quote.duration
+        transaction.payment_status = PAYMENT_PAID
+        transaction.paid_at = self.clock()
+        transaction.gate_out = gate
+        transaction.gate_status = GATE_STATUS_OUT
+        transaction.admin_id = admin_id
+        transaction.shift_id = shift_id
+        if url_gambar:
+            transaction.cam_out = image_path
+            transaction.camout_lpr = image_path
+        plate = normalize_plate(plate_num)
+        if plate:
+            transaction.police_number = plate
+
+        self._log_event(
+            session,
+            source="api",
+            method="gateout-rfid",
+            gate=gate,
+            transaction_code=transaction.transaction_code,
+            detail=(
+                f"total={quote.total} duration={quote.duration} "
+                f"match={quote.plate_match}"
+            ),
+        )

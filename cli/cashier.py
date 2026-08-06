@@ -113,8 +113,9 @@ def cmd_settle(args, config) -> None:
     )
 
     status = settled.get("status")
-    if status in ("success_ticket", "success_member"):
-        print(f"\n✓ settled — {_money(settled.get('total'))}, barrier released")
+    if status == "success":
+        settled_total = (settled.get("data") or {}).get("total", 0)
+        print(f"\n✓ settled — {_money(settled_total)}, barrier released")
     elif status == "already_paid":
         print("\n⚠ this ticket has already been used")
     else:

@@ -57,6 +57,21 @@ class SnapshotStore:
         """The value written to ``cam_in`` / ``cam_out``: ``storage/<dir>/<file>``."""
         return f"storage/{directory}/{filename}"
 
+    def save_upload(self, filename: str, content: bytes) -> str:
+        """Store a file the LPR units upload directly.
+
+        Mirrors ``$file->storeAs('public', $fileName)`` in the Laravel
+        ``GateInLpr`` / ``GateinImageLpr``: the file lands at the storage root
+        and the path recorded in the database is ``storage/<fileName>``, which
+        the ``/storage`` mount serves back.
+        """
+        relative = f"storage/{filename}"
+        target = self.root / filename
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+        log.info("stored uploaded snapshot %s (%d bytes)", filename, len(content))
+        return relative
+
     # -- fetching ----------------------------------------------------------
 
     def download_async(self, url: str, directory: str, filename: str) -> str:

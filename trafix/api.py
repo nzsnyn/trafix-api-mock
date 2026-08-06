@@ -17,6 +17,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
+import httpx
 from fastapi import APIRouter, FastAPI, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -112,6 +113,126 @@ async def gatein_card(request: Request) -> JSONResponse:
 
 
 # ---------------------------------------------------------------------------
+# Entry — the LPR unit drives it directly (multipart image uploads)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/lpr/gatein")
+async def lpr_gatein(request: Request) -> JSONResponse:
+    """The entry LPR unit opens a session from its own read.
+
+    Port of ``GateController::GateInLpr``: the unit uploads its photo and the
+    plate it read; a transaction is created and nothing else happens.
+    """
+    body, image = await _body_and_file(request)
+    plate = body.get("plate_num")
+    if image is None or not plate:
+        return _json(
+            {"status": "error", "message": "Missing image or plate_num"},
+            status_code=400,
+        )
+    result = _service(request).lpr_gate_in(plate=plate, image=image)
+    return _json(
+        {"status": result.status, "transaction_code": result.transaction_code}
+    )
+
+
+@router.post("/lpr/gateinimage")
+async def lpr_gateinimage(request: Request) -> JSONResponse:
+    """Attach the LPR photo to an open session.
+
+    Port of ``GateController::GateinImageLpr``: the session is found by its
+    ticket code or member card, then the photo and plate read are recorded.
+    """
+    body, image = await _body_and_file(request)
+    trxcode = body.get("transaction_code")
+    if image is None or not trxcode:
+        return _json(
+            {"status": "error", "message": "Missing image or transaction_code"},
+            status_code=400,
+        )
+    result = _service(request).attach_gatein_image(
+        transaction_code=str(trxcode),
+        plate=body.get("plate_num"),
+        image=image,
+    )
+    if result["status"] == service.STATUS_NOT_FOUND:
+        return _json(
+            {"status": "error", "message": result["message"]}, status_code=404
+        )
+    return _json(result)
+
+
+@router.post("/lpr/checkimage")
+async def lpr_checkimage(request: Request) -> JSONResponse:
+    """Check the entry LPR's photo is fetchable for an open session.
+
+    Port of ``GateController::checkLprImage``. The probe is a real network
+    call, so it lives here rather than in the service layer.
+    """
+    body = await _body(request)
+    plate = body.get("plate_num")
+    url_image = body.get("url_image")
+    if not url_image or not plate:
+        return _json(
+            {"status": "error", "message": "Missing url_image or plate_num"},
+            status_code=400,
+        )
+
+    srv = _service(request)
+    transaction_code = srv.find_open_plate_code(plate=plate)
+    if transaction_code is None:
+        return _json(
+            {
+                "status": "error",
+                "message": "Active transaction not found for this plate_num",
+                "plate_num": plate,
+            },
+            status_code=404,
+        )
+
+    try:
+        probe = httpx.get(url_image, timeout=5, follow_redirects=True)
+    except httpx.HTTPError as exc:
+        return _json(
+            {"status": "error", "message": f"Error checking image: {exc}"},
+            status_code=500,
+        )
+    if not probe.is_success:
+        return _json(
+            {
+                "status": "error",
+                "message": "Image is not available or unreachable",
+                "status_code": probe.status_code,
+            },
+            status_code=404,
+        )
+    content_type = probe.headers.get("content-type", "")
+    if "image" not in content_type:
+        return _json(
+            {
+                "status": "error",
+                "message": "URL is reachable but not an image",
+                "content_type": content_type,
+            },
+            status_code=400,
+        )
+    if srv.storage is not None:
+        srv.storage.download_async(
+            url_image, "lpr/gatein", srv.storage.lpr_filename(url_image)
+        )
+    return _json(
+        {
+            "status": "success",
+            "message": "Image is available",
+            "plate_num": plate,
+            "transaction_code": transaction_code,
+            "url_image": url_image,
+        }
+    )
+
+
+# ---------------------------------------------------------------------------
 # Exit — the automated LPR path
 # ---------------------------------------------------------------------------
 
@@ -142,26 +263,106 @@ async def lpr_gateout(request: Request) -> JSONResponse:
     return _json(_gateout_payload(result))
 
 
+@router.put("/lpr/gateoutcard")
+async def lpr_gateoutcard(request: Request) -> JSONResponse:
+    """Automated exit driven by an RFID card + plate.
+
+    Port of ``GateoutController::GateOutRfidLpr``: the card is resolved as a
+    member's entry or as a ticket code, the session is settled, and only the
+    sparse status string is echoed back.
+    """
+    body = await _body(request)
+    try:
+        status = _service(request).gate_out_rfid(
+            card=body.get("card"),
+            gate=str(body.get("gate_out") or body.get("gate") or "2"),
+            plate_num=body.get("plate_num"),
+            url_gambar=body.get("url_gambar"),
+            admin_id=_int(body.get("admin_id")),
+            shift_id=_int(body.get("shift_id")),
+        )
+    except Exception:
+        log.exception("PUT /api/lpr/gateoutcard failed")
+        return _json({"status": "error"}, status_code=500)
+    return _json({"status": status})
+
+
 @router.post("/lpr/checkimagegateout")
 async def check_image_gateout(request: Request) -> JSONResponse:
     """Look up an open session by plate, without settling it.
 
-    Returns 404 when nothing matches — the same status the live site returns,
-    though there it fires for a different reason (§7.7: the plate strings never
-    agree, so the lookup can't succeed).
+    Response matches ``checkLprImageGateOut``, including the nested
+    ``image``/``gatein``/``gateout`` groups. Returns 404 when nothing matches —
+    the same status the live site returns, though there it fires for a
+    different reason (§7.7: the plate strings never agree).
     """
     body = await _body(request)
-    result = _service(request).quote(plate=body.get("plate_num"))
-    if result.status == service.STATUS_NOT_FOUND:
+    plate_num = body.get("plate_num")
+    url_image = body.get("url_image") or body.get("url_gambar")
+    if not plate_num:
+        return _json(
+            {"status": "error", "message": "Missing plate_num"}, status_code=400
+        )
+
+    srv = _service(request)
+    quote = srv.quote_gateout_image(plate=plate_num)
+    if quote is None:
         return _json(
             {
-                "status": "notfound",
-                "status_code": 404,
+                "status": "error",
                 "message": "Active transaction not found for this plate_num",
+                "plate_num": plate_num,
             },
             status_code=404,
         )
-    return _json(_gateout_payload(result))
+
+    available = False
+    message = "No url_image provided"
+    if url_image:
+        try:
+            probe = httpx.get(url_image, timeout=5, follow_redirects=True)
+            if not probe.is_success:
+                message = "Image is not available or unreachable"
+            elif "image" not in probe.headers.get("content-type", ""):
+                message = "URL is reachable but not an image"
+            else:
+                if srv.storage is not None:
+                    srv.storage.download_async(
+                        url_image,
+                        "lpr/gateout",
+                        srv.storage.lpr_filename(url_image, prefix="CAMOUT_LPR"),
+                    )
+                available = True
+                message = "Image is available, download queued"
+        except Exception as exc:
+            message = f"Error checking image: {exc}"
+
+    return _json(
+        {
+            "status": "success",
+            "plate_num": plate_num,
+            "image": {"available": available, "message": message, "url_image": url_image},
+            "gatein": {
+                "transaction_id": quote.transaction_id,
+                "transaction_code": quote.transaction_code,
+                "police_number": quote.police_number,
+                "card_number": quote.card_number,
+                "vehicle_id": quote.vehicle_id,
+                "vehicle_name": quote.vehicle_name,
+                "time_checkin": quote.time_checkin,
+                "gate_in": quote.gate_in,
+                "gate_status": quote.gate_status,
+                "payment_status": quote.payment_status,
+                "cam_in": quote.cam_in,
+                "camin_lpr": quote.camin_lpr,
+            },
+            "gateout": {
+                "gate_out": quote.gate_out,
+                "cam_out": quote.cam_out,
+                "camout_lpr": quote.camout_lpr,
+            },
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -187,29 +388,31 @@ async def detail_transaction(request: Request) -> JSONResponse:
             status_code=404,
         )
 
-    return _json(
-        {
-            "status": "success",
-            "status_code": 200,
-            "transaction": "member" if result.is_member else "ticket",
-            "message": "success_member" if result.is_member else "success_ticket",
-            "data": {
-                "member_code": result.plate_in if result.is_member else None,
-                "name": result.member_name,
-                "transaction_code": result.transaction_code,
-                "vehicle_id": None,
-                "time_checkin": result.time_checkin,
-                "time_checkout": result.time_checkout,
-                "duration": result.duration,
-                "total": result.total,
-                "cam_in": result.cam_in or "-",
-                "cam_out": result.cam_out or "-",
-                "payment_status": "lunas" if result.total == 0 else "belum_lunas",
-                "police_number": result.plate_in,
-                "breakdown": result.breakdown,
-            },
-        }
-    )
+    payload: dict[str, Any] = {
+        "status": "success",
+        "status_code": 200,
+        "transaction": "member" if result.is_member else "not_member",
+        "data": {
+            "member_code": result.plate_in if result.is_member else None,
+            "name": result.member_name,
+            "transaction_code": result.transaction_code,
+            "vehicle_id": None,
+            "time_checkin": result.time_checkin,
+            "time_checkout": result.time_checkout,
+            "duration": result.duration,
+            "total": result.total,
+            "cam_in": result.cam_in or "-",
+            "cam_out": result.cam_out or "-",
+            "payment_status": "lunas" if result.total == 0 else "belum_lunas",
+            "police_number": result.plate_in,
+            "breakdown": result.breakdown,
+        },
+    }
+    # The captured member body carries message: success_member; the not-member
+    # branch in Laravel omits it.
+    if result.is_member:
+        payload["message"] = "success_member"
+    return _json(payload)
 
 
 @router.put("/gateout/gateoutKasir")
@@ -235,7 +438,13 @@ async def gateout_kasir(request: Request) -> JSONResponse:
             {"status": "notfound", "status_code": 404, "message": result.message},
             status_code=404,
         )
-    return _json(_gateout_payload(result))
+    return _json(
+        {
+            "status": "success",
+            "status_code": 200,
+            "data": _kasir_payload(result),
+        }
+    )
 
 
 @router.get("/health")
@@ -268,6 +477,27 @@ def _gateout_payload(result: service.GateOutResult) -> dict[str, Any]:
     }
 
 
+def _kasir_payload(result: service.GateOutResult) -> dict[str, Any]:
+    """``responData()`` — the body ``gateoutKasir`` returns on success."""
+    return {
+        "transaction_code": result.transaction_code,
+        "vehicle_id": result.vehicle_id,
+        "time_checkin": result.time_checkin,
+        "time_checkout": result.time_checkout,
+        "duration": result.duration,
+        "total": result.total,
+        "cam_in": result.cam_in,
+        "cam_out": result.cam_out,
+        "payment_status": result.payment_status,
+        "police_number": result.plate_in,
+        "admin_id": result.admin_id,
+        "shift_id": result.shift_id,
+        "created_at": result.created_at,
+        "updated_at": result.updated_at,
+        "discount": "false",
+    }
+
+
 async def _body(request: Request) -> dict[str, Any]:
     """Accept JSON, form-urlencoded, or multipart.
 
@@ -289,6 +519,25 @@ async def _body(request: Request) -> dict[str, Any]:
 
     # Fall back to the query string, which is how checkimagegateout is called.
     return dict(request.query_params)
+
+
+async def _body_and_file(request: Request) -> tuple[dict[str, Any], bytes | None]:
+    """The parsed body and the ``image`` upload (multipart), else None.
+
+    The LPR entry endpoints (``lpr/gatein``, ``lpr/gateinimage``) receive the
+    photo as an ``image`` file in a multipart request. JSON bodies carry no
+    file.
+    """
+    content_type = request.headers.get("content-type", "")
+    if "application/json" in content_type:
+        return await _body(request), None
+
+    form = await request.form()
+    payload = {key: form[key] for key in form if key != "image"}
+    image = form.get("image")
+    if image is None or not hasattr(image, "read"):
+        return payload, None
+    return payload, await image.read()
 
 
 def _int(value: Any) -> int | None:
