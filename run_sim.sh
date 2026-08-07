@@ -81,6 +81,11 @@ sleep 3
 start orchestrator trafix.orchestrator
 sleep 1
 
+# The cashier's local gate-open daemon (http://127.0.0.1:8090/open-gate). The
+# cashier page POSTs here after settling to raise the exit barrier.
+start open_gate mocks.open_gate --gate 2
+sleep 1
+
 echo
 echo "ready. In another terminal:"
 if [[ -x ".venv/bin/trafix" ]]; then

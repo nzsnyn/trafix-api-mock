@@ -3,6 +3,8 @@ services:
     image: eclipse-mosquitto:2
     container_name: trafix-mosquitto
     restart: unless-stopped
+    environment:
+      TZ: ${TZ:-Asia/Jakarta}
     ports:
       - "1883:1883"
       - "9001:9001"
@@ -11,6 +13,11 @@ services:
       - ./mosquitto/config/mosquitto.passwd:/mosquitto/config/mosquitto.passwd:ro
       - mosquitto_data:/mosquitto/data
       - mosquitto_log:/mosquitto/log
+    healthcheck:
+      test: ["CMD", "mosquitto_sub", "-u", "bssparking", "-P", "BCTDev_2025", "-t", "$$SYS/broker/version", "-C", "1", "-W", "5"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   postgres:
     image: postgres:16-alpine
@@ -20,6 +27,8 @@ services:
       POSTGRES_USER: trafix
       POSTGRES_PASSWORD: trafix
       POSTGRES_DB: parkways
+      TZ: ${TZ:-Asia/Jakarta}
+      PGTZ: ${TZ:-Asia/Jakarta}
     ports:
       # 5433 on the host so this never collides with a local PostgreSQL.
       - "5433:5432"
@@ -32,7 +41,86 @@ services:
       timeout: 5s
       retries: 10
 
+  api:
+    build: .
+    container_name: trafix-api
+    restart: unless-stopped
+    command: ["trafix-server", "--env", "docker"]
+    ports:
+      - "8000:8000"
+    environment:
+      TRAFIX_ENV: docker
+      TZ: ${TZ:-Asia/Jakarta}
+      MQTT_USER: ${MQTT_USER:-bssparking}
+      MQTT_PASS: ${MQTT_PASS:-BCTDev_2025}
+      GATE1_SERIAL: ${GATE1_SERIAL:-441D6491AF17}
+      GATE2_SERIAL: ${GATE2_SERIAL:-441D6491AF18}
+      LPR_IN_HOST: ${LPR_IN_HOST:-192.168.1.130}
+      LPR_IN_URL: ${LPR_IN_URL:-http://192.168.1.130:8090}
+      LPR_OUT_HOST: ${LPR_OUT_HOST:-192.168.1.149}
+      LPR_OUT_URL: ${LPR_OUT_URL:-http://192.168.1.149:8090}
+      # Where the desk browser POSTs /open-gate after settling. Default keeps
+      # the local mock daemon; point it at the cashier PC's real daemon when
+      # the desk is a separate machine.
+      OPEN_GATE_URL: ${OPEN_GATE_URL:-http://127.0.0.1:8090/open-gate}
+    volumes:
+      - storage_data:/app/storage
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/api/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  orchestrator:
+    build: .
+    container_name: trafix-orchestrator
+    restart: unless-stopped
+    command: ["trafix-orchestrator", "--env", "docker"]
+    environment:
+      TRAFIX_ENV: docker
+      TZ: ${TZ:-Asia/Jakarta}
+      MQTT_USER: ${MQTT_USER:-bssparking}
+      MQTT_PASS: ${MQTT_PASS:-BCTDev_2025}
+      GATE1_SERIAL: ${GATE1_SERIAL:-441D6491AF17}
+      GATE2_SERIAL: ${GATE2_SERIAL:-441D6491AF18}
+      LPR_IN_HOST: ${LPR_IN_HOST:-192.168.1.130}
+      LPR_IN_URL: ${LPR_IN_URL:-http://192.168.1.130:8090}
+      LPR_OUT_HOST: ${LPR_OUT_HOST:-192.168.1.149}
+      LPR_OUT_URL: ${LPR_OUT_URL:-http://192.168.1.149:8090}
+    depends_on:
+      api:
+        condition: service_healthy
+
+  open-gate:
+    build: .
+    container_name: trafix-open-gate
+    restart: unless-stopped
+    # The cashier desk POSTs to http://127.0.0.1:8090/open-gate (the desk's
+    # own loopback — on the real cashier PC that is the Tauri app's daemon).
+    # Exposed here so the mock daemon stands in for it and raises the exit
+    # barrier over MQTT.
+    command: ["python", "-m", "mocks.open_gate", "--gate", "2", "--env", "docker"]
+    ports:
+      - "8090:8090"
+    environment:
+      TRAFIX_ENV: docker
+      TZ: ${TZ:-Asia/Jakarta}
+      MQTT_USER: ${MQTT_USER:-bssparking}
+      MQTT_PASS: ${MQTT_PASS:-BCTDev_2025}
+      GATE1_SERIAL: ${GATE1_SERIAL:-441D6491AF17}
+      GATE2_SERIAL: ${GATE2_SERIAL:-441D6491AF18}
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+
 volumes:
   mosquitto_data:
   mosquitto_log:
   postgres_data:
+  storage_data:

@@ -99,6 +99,11 @@ class LprConfig:
     base_url: str
     public_url: str
     serves_http: bool
+    # The gate number the device actually uses on the `gate/out/{gate}/pos`
+    # wire topic. Decoupled from the logical `gate` because the real exit LPR
+    # (.149) publishes with "1" while the exit lane is logically gate "2"
+    # (flow.md §8). Defaults to the logical gate.
+    pos_topic_gate: str = ""
 
 
 @dataclass(frozen=True)
@@ -139,6 +144,10 @@ class Config:
     broker: BrokerConfig
     database_url: str
     api: ApiConfig
+    # Where the cashier's local gate-open daemon listens. In production the
+    # Tauri app POSTs to http://192.168.1.2:8090/open-gate after settling an
+    # exit — that service physically raises the exit barrier.
+    open_gate_url: str
     controllers: dict[str, GateControllerConfig]  # keyed by gate
     lpr: dict[str, LprConfig]  # keyed by gate
     cameras: dict[str, CameraConfig]  # keyed by name
@@ -225,7 +234,7 @@ def load_config(env: str | None = None, path: Path | None = None) -> Config:
             name=name,
             gate=gate,
             host=str(_env(_require(entry, "host", f"{where}.controllers.{name}"))),
-            serial_no=str(entry.get("serial_no", "")),
+            serial_no=str(_env(entry.get("serial_no")) or ""),
         )
 
     lpr: dict[str, LprConfig] = {}
@@ -242,6 +251,7 @@ def load_config(env: str | None = None, path: Path | None = None) -> Config:
             base_url=base_url.rstrip("/"),
             public_url=str(_env(entry.get("public_url")) or base_url).rstrip("/"),
             serves_http=bool(entry.get("serves_http", True)),
+            pos_topic_gate=str(_env(entry.get("pos_topic_gate")) or gate),
         )
 
     cameras: dict[str, CameraConfig] = {}
@@ -256,12 +266,14 @@ def load_config(env: str | None = None, path: Path | None = None) -> Config:
 
     policies = _parse_policies(raw.get("policies", {}), config_path=path)
     database_url = str(_env(_require(block, "database_url", where)))
+    open_gate_url = str(_env(block.get("open_gate_url")) or "")
 
     return Config(
         env=env,
         broker=broker,
         database_url=database_url,
         api=api,
+        open_gate_url=open_gate_url,
         controllers=controllers,
         lpr=lpr,
         cameras=cameras,

@@ -750,11 +750,13 @@ class ParkingService:
         tariff_row = session.scalar(
             select(ParkingFees).where(ParkingFees.vehicle_id == transaction.vehicle_id)
         )
-        member = session.scalar(
-            select(Members).where(
-                Members.police_number == (transaction.police_number or "\x00")
+        member = None
+        if transaction.police_number:
+            member = session.scalar(
+                select(Members).where(
+                    Members.police_number == transaction.police_number
+                )
             )
-        )
 
         check_in = datetime.strptime(transaction.time_checkin, DATETIME_FORMAT)
         check_out = self.clock()

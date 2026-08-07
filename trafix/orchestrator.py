@@ -107,9 +107,13 @@ class Orchestrator:
             if gate == self._entry_gate():
                 continue
             self.bus.subscribe_raw(
-                gate_out_pos_topic(gate), self._make_exit_handler(gate)
+                gate_out_pos_topic(lpr.pos_topic_gate), self._make_exit_handler(gate)
             )
-            log.info("watching exit reads on %s", gate_out_pos_topic(gate))
+            log.info(
+                "watching exit reads on %s (logical gate %s)",
+                gate_out_pos_topic(lpr.pos_topic_gate),
+                gate,
+            )
 
         self.bus.connect()
         self._check_dependencies()
@@ -138,7 +142,8 @@ class Orchestrator:
                 )
                 continue
             try:
-                self.http.get(f"{lpr.base_url}/checklpr", timeout=2)
+                response = self.http.get(f"{lpr.base_url}/checklpr", timeout=2)
+                response.raise_for_status()
                 log.info("LPR %s reachable at %s", lpr.name, lpr.base_url)
             except httpx.HTTPError as exc:
                 log.error("LPR %s NOT reachable at %s: %s", lpr.name, lpr.base_url, exc)
@@ -404,37 +409,22 @@ class Orchestrator:
         return handler
 
     def _settle_by_plate(self, gate: str, plate: str, image_url: str) -> None:
-        """Try the automated exit.
+        """Automated exit through the production ``gateoutcard`` contract.
 
-        This is the path that returns 500 on site (§7.1). It resolves the
-        ticket, charges, and — if the fee is zero — releases the vehicle. A
-        chargeable ticket is left for the cashier: no barrier opens until
-        someone has been paid.
+        On site the exit gate controller itself calls ``PUT /api/lpr/gateoutcard``
+        (``GateoutController::GateOutRfidLpr`` :1603) with the scanned RFID/ticket;
+        the backend answers ``success_member``/``success_ticket`` and the device
+        firmware raises the barrier. The simulator has no device, so the
+        orchestrator plays it: it quotes the fee first (only free sessions are
+        released — a chargeable ticket is left for the cashier), settles through
+        the real endpoint, then raises the exit barrier on success.
         """
-        try:
-            response = self.http.post(
-                f"{self.config.api.base_url}/api/lpr/gateout",
-                json={
-                    "gate_out": gate,
-                    "plate_num": plate,
-                    "url_gambar": image_url,
-                },
-                timeout=10,
-            )
-            payload = response.json()
-        except (httpx.HTTPError, ValueError) as exc:
-            log.error("gate %s: /api/lpr/gateout failed: %s", gate, exc)
+        quote = self._quote_exit(gate, plate)
+        if quote is None:
             return
+        code, total = quote
 
-        status = payload.get("status")
-        total = payload.get("total") or 0
-
-        if status in ("success_member", "success_ticket") and total == 0:
-            log.info("gate %s: %s owes nothing, releasing", gate, plate)
-            # The API already published the barrier command.
-            return
-
-        if status in ("success_member", "success_ticket"):
+        if total > 0:
             log.info(
                 "gate %s: %s owes %s — waiting for the cashier",
                 gate,
@@ -443,21 +433,81 @@ class Orchestrator:
             )
             return
 
-        log.warning("gate %s: automated exit refused for %s: %s", gate, plate, status)
+        try:
+            response = self.http.put(
+                f"{self.config.api.base_url}/api/lpr/gateoutcard",
+                json={
+                    "card": code,
+                    "plate_num": plate,
+                    "url_gambar": image_url,
+                    "gate_out": gate,
+                },
+                timeout=10,
+            )
+            payload = response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            log.error("gate %s: /api/lpr/gateoutcard failed: %s", gate, exc)
+            return
+
+        status = payload.get("status")
+        if status in ("success_member", "success_ticket"):
+            log.info(
+                "gate %s: %s released (%s), raising the barrier",
+                gate,
+                plate,
+                status,
+            )
+            # The device firmware opens on success_*; stand in for it here.
+            self._open(gate, exit_lane=True)
+            return
+
+        log.warning(
+            "gate %s: automated exit refused for %s: %s", gate, plate, status
+        )
+
+    def _quote_exit(self, gate: str, plate: str) -> tuple[str, float] | None:
+        """The cashier's own quote for the plate: (transaction code, fee)."""
+        try:
+            response = self.http.post(
+                f"{self.config.api.base_url}/api/gateout/detailtransaction",
+                json={"transaction_code": "", "police_number": plate},
+                timeout=10,
+            )
+            payload = response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            log.error("gate %s: exit quote failed: %s", gate, exc)
+            return None
+
+        if payload.get("status") != "success":
+            log.warning(
+                "gate %s: no open transaction for %s (%s)",
+                gate,
+                plate,
+                payload.get("status"),
+            )
+            return None
+
+        data = payload.get("data") or {}
+        code = data.get("transaction_code")
+        if not code:
+            log.warning("gate %s: quote carried no transaction code", gate)
+            return None
+        return str(code), float(data.get("total") or 0)
 
     # -- barrier -----------------------------------------------------------
 
-    def _open(self, gate: str) -> None:
+    def _open(self, gate: str, *, exit_lane: bool = False) -> None:
         controller = self.config.controller_for(gate)
+        topic = gate_out_topic(gate) if exit_lane else gate_in_topic(gate)
         self.bus.publish(
-            gate_in_topic(gate),
+            topic,
             open_barrier(
                 controller.serial_no,
                 pulse_ms=self.config.policies.barrier_pulse_ms,
                 beep_ms=self.config.policies.barrier_beep_ms,
             ),
         )
-        log.info("gate %s: 🚧 barrier command sent", gate)
+        log.info("gate %s: 🚧 barrier command sent (%s)", gate, topic)
 
 
 def _as_int(value) -> int:

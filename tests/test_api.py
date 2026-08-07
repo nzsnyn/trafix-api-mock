@@ -21,6 +21,7 @@ def app(session_factory, publisher, clock, tmp_path):
 
     config = SimpleNamespace(
         env="test",
+        open_gate_url="http://127.0.0.1:8090/open-gate",
         policies=SimpleNamespace(
             storage_dir=tmp_path / "storage",
             require_plate_match=False,
@@ -239,6 +240,41 @@ def test_lpr_gateout_refuses_a_used_ticket(client, clock):
 
 
 # -- the cashier path -------------------------------------------------------
+
+
+def test_cashier_page_injects_gate_open_url(client):
+    """The desk page is wired to the cashier's local gate-open daemon."""
+    html = client.get("/cashier").text
+    assert "OPEN_GATE_URL" in html
+    assert "http://127.0.0.1:8090/open-gate" in html
+    assert "openGate(" in html
+
+
+def test_cashier_page_defaults_to_the_site_gate_open_url(session_factory, publisher, clock, tmp_path):
+    from types import SimpleNamespace
+
+    from trafix.storage import SnapshotStore
+
+    config = SimpleNamespace(
+        env="test",
+        open_gate_url="",
+        policies=SimpleNamespace(
+            storage_dir=tmp_path / "storage",
+            require_plate_match=False,
+            command_exit_barrier=True,
+        ),
+    )
+    service = ParkingService(
+        session_factory,
+        publisher=publisher,
+        clock=clock,
+        print_gap_seconds=0,
+        storage=SnapshotStore(config.policies.storage_dir),
+    )
+    app = create_app(config, service)
+
+    html = TestClient(app).get("/cashier").text
+    assert "http://192.168.1.2:8090/open-gate" in html
 
 
 def test_detailtransaction_accepts_multipart(client, clock):

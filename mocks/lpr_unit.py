@@ -57,9 +57,17 @@ SIM_READ_PLATE = "read_plate"
 
 
 class LprState:
-    def __init__(self, name: str, gate: str, public_url: str, seed: int | None) -> None:
+    def __init__(
+        self,
+        name: str,
+        gate: str,
+        public_url: str,
+        seed: int | None,
+        pos_topic_gate: str,
+    ) -> None:
         self.name = name
         self.gate = gate
+        self.pos_topic_gate = pos_topic_gate
         self.public_url = public_url.rstrip("/")
         self.rng = random.Random(seed)
         self.lock = threading.Lock()
@@ -237,7 +245,7 @@ class LprMqtt:
 
         log.info("[%s] read %s, announcing on MQTT", self.state.name, plate or "(none)")
         self.bus.publish_raw(
-            gate_out_pos_topic(self.state.gate),
+            gate_out_pos_topic(self.state.pos_topic_gate),
             json.dumps({"plate_num": plate, "url_gambar": url}),
         )
 
@@ -262,7 +270,9 @@ def main() -> None:
 
     config = load_config(args.env)
     device = config.lpr_for(args.gate)
-    state = LprState(device.name, args.gate, device.public_url, args.seed)
+    state = LprState(
+        device.name, args.gate, device.public_url, args.seed, device.pos_topic_gate
+    )
 
     bus = MqttBus(config.broker, client_id=f"lpr-{args.gate}")
     mqtt_side = LprMqtt(bus, state, publishes_reads=args.publishes_reads)

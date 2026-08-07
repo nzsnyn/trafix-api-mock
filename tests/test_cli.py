@@ -63,7 +63,7 @@ def test_gate_exit_lane_targets_the_out_topic(bus, config):
 
     (topic, envelope), = bus.published
     assert topic == "/GATE/OUT/2"
-    assert envelope.serial_no == "441D6491AF18"
+    assert envelope.serial_no == "441D6491AF17"
 
 
 def test_gate_without_a_configured_controller_warns_and_uses_empty_serial(
@@ -89,7 +89,7 @@ def test_out_gate_opens_the_exit_barrier(bus, config):
     (topic, envelope), = bus.published
     assert topic == "/GATE/OUT/2"
     assert envelope.method == METHOD_OUTPUT_CTRL
-    assert envelope.serial_no == "441D6491AF18"
+    assert envelope.serial_no == "441D6491AF17"
     assert envelope.data == {"relay1Out": [1, 1000], "beepOut": [1, 100]}
 
 

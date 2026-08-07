@@ -12,6 +12,7 @@ at a method that does not exist and returns 500 on every automated exit.
 
 from __future__ import annotations
 
+import json
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -20,7 +21,7 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, FastAPI, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from trafix import db, service
@@ -31,6 +32,10 @@ log = logging.getLogger("api")
 
 router = APIRouter(prefix="/api")
 
+# The cashier desk page and the root redirect live OUTSIDE the /api prefix so
+# the desk browses to http://<server>:8000/cashier, not /api/cashier.
+web_router = APIRouter()
+
 
 def _service(request: Request) -> ParkingService:
     return request.app.state.service
@@ -38,6 +43,214 @@ def _service(request: Request) -> ParkingService:
 
 def _json(payload: dict[str, Any], status_code: int = 200) -> JSONResponse:
     return JSONResponse(content=payload, status_code=status_code)
+
+
+CASHIER_PAGE_HTML = """<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kasir Parkir</title>
+<style>
+  :root { --ink:#1f2430; --muted:#6b7280; --line:#e5e7eb; --ok:#16a34a; --warn:#d97706; --err:#dc2626; --bg:#f3f4f6; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background:var(--bg); color:var(--ink); }
+  .wrap { max-width:560px; margin:0 auto; padding:24px 16px 64px; }
+  h1 { font-size:20px; margin:0 0 4px; }
+  .sub { color:var(--muted); font-size:13px; margin:0 0 20px; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:16px; }
+  label { display:block; font-size:12px; font-weight:600; margin:10px 0 4px; color:var(--muted); }
+  input, select {
+    width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:8px;
+    font-size:16px; background:#fff; color:var(--ink);
+  }
+  input:focus { outline:2px solid #2563eb; border-color:transparent; }
+  .row { display:flex; gap:10px; }
+  .row > div { flex:1; }
+  .btns { display:flex; gap:10px; margin-top:16px; }
+  button {
+    flex:1; padding:12px; border:none; border-radius:8px; font-size:15px; font-weight:600; cursor:pointer;
+  }
+  .lookup { background:#eef2ff; color:#3730a3; }
+  .settle { background:#16a34a; color:#fff; }
+  .lost   { background:#fff7ed; color:#9a3412; border:1px solid #fdba74; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .result { white-space:pre-wrap; font-size:14px; line-height:1.6; }
+  .result .ok  { color:var(--ok); font-weight:700; }
+  .result .err { color:var(--err); font-weight:700; }
+  .result .warn{ color:var(--warn); font-weight:700; }
+  .k { color:var(--muted); }
+  .total { font-size:24px; font-weight:800; margin-top:6px; }
+  .note { font-size:12px; color:var(--muted); margin-top:12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Kasir Parkir</h1>
+  <p class="sub">Cek tarif, terima pembayaran tunai, lalu buka gate keluar.</p>
+
+  <div class="card">
+    <label for="ticket">Nomor tiket / isi QR</label>
+    <input id="ticket" autocomplete="off" autofocus placeholder="contoh: 9922432407">
+
+    <label for="plate">Plat nomor (untuk tiket hilang)</label>
+    <input id="plate" autocomplete="off" placeholder="contoh: H 488 AI">
+
+    <div class="row">
+      <div>
+        <label for="gate">Gate keluar</label>
+        <input id="gate" value="2" inputmode="numeric">
+      </div>
+      <div>
+        <label for="admin">Admin ID</label>
+        <input id="admin" value="1" inputmode="numeric">
+      </div>
+      <div>
+        <label for="shift">Shift ID</label>
+        <input id="shift" value="1" inputmode="numeric">
+      </div>
+    </div>
+
+    <div class="btns">
+      <button class="lookup" id="btnLookup">Cek Tarif</button>
+      <button class="settle" id="btnSettle">Bayar &amp; Buka Gate</button>
+      <button class="lost" id="btnLost">Tiket Hilang</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="result" id="result">Hasil akan tampil di sini.</div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const OPEN_GATE_URL = __OPEN_GATE_URL__;
+
+function money(v) {
+  const n = Number(v) || 0;
+  return "Rp" + n.toLocaleString("id-ID");
+}
+
+function fmt(p) {
+  const d = p.data || {};
+  const lines = [];
+  if (p.status !== "success") {
+    lines.push(p.status === "notfound" ? "❌ Transaksi tidak ditemukan." : "❌ " + (p.message || p.status));
+    return lines.join("\\n");
+  }
+  lines.push("✅ Transaksi ditemukan.");
+  if (d.name) lines.push("Member: " + d.name);
+  if (d.transaction_code) lines.push("Tiket   : " + d.transaction_code);
+  if (d.police_number) lines.push("Plat    : " + d.police_number);
+  if (d.time_checkin) lines.push("Masuk   : " + d.time_checkin);
+  if (d.time_checkout) lines.push("Keluar  : " + d.time_checkout);
+  if (d.duration) lines.push("Durasi  : " + d.duration);
+  if (d.payment_status) lines.push("Status  : " + d.payment_status);
+  if (d.breakdown) lines.push("Rincian : " + d.breakdown);
+  if (d.total !== undefined && d.total !== null) lines.push("Total   : " + money(d.total));
+  if (p.settled) {
+    lines.push("");
+    lines.push(p.settled === "already_paid" ? "⚠ Tiket sudah pernah digunakan." : "🔓 Pembayaran diterima — gate keluar dibuka.");
+  }
+  return lines.join("\\n");
+}
+
+async function call(method, path, body) {
+  const res = await fetch(path, {
+    method,
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(body),
+  });
+  let payload;
+  try { payload = await res.json(); }
+  catch (e) { throw new Error("Respons bukan JSON (" + res.status + ")"); }
+  if (res.status === 404 && payload.status === "notfound") return payload;
+  if (res.status >= 400 && payload.status !== "notfound") throw new Error(payload.message || res.status);
+  return payload;
+}
+
+function body() {
+  return {
+    transaction_code: $("ticket").value.trim(),
+    police_number: $("plate").value.trim(),
+    gate_out: $("gate").value.trim() || "2",
+    admin_id: $("admin").value.trim() || "1",
+    shift_id: $("shift").value.trim() || "1",
+  };
+}
+
+function setBusy(on) {
+  $("btnLookup").disabled = on;
+  $("btnSettle").disabled = on;
+  $("btnLost").disabled = on;
+}
+
+$("btnLookup").onclick = async () => {
+  $("result").textContent = "Mencari…";
+  setBusy(true);
+  try {
+    const p = await call("POST", "/api/gateout/detailtransaction", body());
+    $("result").textContent = fmt(p);
+  } catch (e) {
+    $("result").textContent = "❌ " + e.message;
+  } finally { setBusy(false); }
+};
+
+async function settle(lost) {
+  $("result").textContent = "Memproses…";
+  setBusy(true);
+  try {
+    const b = body();
+    b.lost_ticket = lost ? "1" : "";
+    const p = await call("PUT", "/api/gateout/gateoutKasir", b);
+    const settled = p.status === "already_paid" ? "already_paid" : (p.status === "success" ? "ok" : null);
+    if (!settled) {
+      $("result").textContent = "❌ " + (p.message || p.status);
+      return;
+    }
+    let text = fmt({...p, settled});
+    if (OPEN_GATE_URL) {
+      let gateMsg;
+      try {
+        gateMsg = await openGate(b);
+      } catch (e) {
+        gateMsg = "gagal: " + e.message;
+      }
+      if (gateMsg !== "ok") text += "\n⚠ Gate keluar: " + gateMsg;
+    }
+    $("result").textContent = text;
+  } catch (e) {
+    $("result").textContent = "❌ " + e.message;
+  } finally { setBusy(false); }
+}
+
+async function openGate(b) {
+  const fd = new URLSearchParams();
+  fd.set("police_number", b.police_number || "");
+  fd.set("lpr_plate", b.police_number || "");
+  fd.set("transaction_code", b.transaction_code || "");
+  const res = await fetch(OPEN_GATE_URL, {
+    method: "POST",
+        headers: {
+            "accept": "application/json",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+    body: fd.toString(),
+  });
+  const bodyText = await res.text();
+  if (!res.ok) return "HTTP " + res.status + (bodyText ? ": " + bodyText : "");
+  return "ok";
+}
+
+$("btnSettle").onclick = () => settle(false);
+$("btnLost").onclick = () => settle(true);
+
+$("ticket").addEventListener("keydown", e => { if (e.key === "Enter") $("btnSettle").click(); });
+</script>
+</body>
+</html>
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -452,6 +665,29 @@ async def health(request: Request) -> JSONResponse:
     return _json({"status": "ok", "env": request.app.state.config.env})
 
 
+@web_router.get("/", include_in_schema=False)
+async def index() -> RedirectResponse:
+    return RedirectResponse("/cashier")
+
+
+@web_router.get("/cashier", include_in_schema=False)
+async def cashier_page(request: Request) -> HTMLResponse:
+    """The cashier desk, as a small web page.
+
+    Served from the API itself so the desk only needs a browser pointed at
+    ``http://<server>:8000/cashier``. Calls the same two endpoints the Tauri
+    app uses (``detailtransaction`` then ``gateoutKasir``), then POSTs to the
+    cashier's local gate-open daemon (``open_gate_url``) to raise the exit
+    barrier — matching the captured Tauri behaviour.
+    """
+    config = getattr(request.app.state, "config", None)
+    url = json.dumps(
+        getattr(config, "open_gate_url", "")
+        or "http://192.168.1.2:8090/open-gate"
+    )
+    return HTMLResponse(CASHIER_PAGE_HTML.replace("__OPEN_GATE_URL__", url))
+
+
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
@@ -579,6 +815,7 @@ def create_app(config: Config, parking_service: ParkingService) -> FastAPI:
     )
 
     app.include_router(router)
+    app.include_router(web_router)
 
     storage_dir = Path(config.policies.storage_dir)
     storage_dir.mkdir(parents=True, exist_ok=True)

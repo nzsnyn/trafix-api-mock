@@ -30,6 +30,10 @@ environments:
       port: 8000
       base_url: http://127.0.0.1:8000
 
+    # The cashier machine's local gate-open daemon. The real one lives on the
+    # Tauri PC (192.168.1.2:8090); in the simulator it is mocks/open_gate.py.
+    open_gate_url: ${OPEN_GATE_URL:-http://127.0.0.1:8090/open-gate}
+
     controllers:
       gate_controller_in:
         gate: "1"
@@ -38,26 +42,26 @@ environments:
       gate_controller_out:
         gate: "2"
         host: 127.0.0.1
-        serial_no: "441D6491AF18"     # invented: no exit controller exists on site
+        serial_no: "441D6491AF17"     # invented: no exit controller exists on site
 
     lpr:
       lpr_in:
         gate: "1"
-        host: 192.168.1.130
-        port: 8090
-        base_url: http://192.168.1.130:8090
-        public_url: http://192.168.1.130:8090
-        serves_http: true
+        host: 192.168.1.150
+        port: 8000
+        base_url: http://192.168.1.150:8000
+        public_url: http://192.168.1.150:8000
+        # Real LPR terminals (.150 entry, .148 exit) serve a proprietary web UI,
+        # not the mock's GET /checklpr. Plates arrive over MQTT; the entry poll
+        # 404s and falls back to a no-plate ticket (as production does).
+        serves_http: false
       lpr_out:
         gate: "2"
         host: 192.168.1.148
         port: 8000
         base_url: http://192.168.1.148:8000
-        public_url: http://192.168.1.149:8000
-        # On site this is false — .149 accepts no TCP connections at all
-        # (flow.md §7.2). Left true here so the simulator exercises the
-        # working path; set false to reproduce the production failure.
-        serves_http: true
+        public_url: http://192.168.1.148:8000
+        serves_http: false
 
     cameras:
       cam_in:
@@ -66,6 +70,63 @@ environments:
       cam_out:
         host: 127.0.0.1:8150
         snapshot_path: /cgi-bin/snapshot.cgi
+
+  # The Docker deployment (`docker compose up`). Broker and database are the
+  # compose services; the API and orchestrator run as containers too and reach
+  # them by service name. Override the real hardware with env vars in a
+  # `.env` next to the compose file: GATE1_SERIAL, GATE2_SERIAL, LPR_IN_HOST,
+  # LPR_OUT_HOST, etc.
+  docker:
+    database_url: ${TRAFIX_DB_DOCKER:-postgresql+psycopg://trafix:trafix@postgres:5432/parkways}
+
+    broker:
+      host: mosquitto
+      port: 1883
+      keepalive: 30
+      username: ${MQTT_USER:-bssparking}
+      password: ${MQTT_PASS:-BCTDev_2025}
+      client_id_prefix: trafix-docker
+
+    api:
+      host: 0.0.0.0
+      port: 8000
+      # Internal name the orchestrator container uses; set TRAFIX_API_URL to
+      # the LAN address when running the CLI/cashier from another machine.
+      base_url: ${TRAFIX_API_URL:-http://api:8000}
+
+    # Defaults to the local mock daemon; set OPEN_GATE_URL to the cashier
+    # PC's real daemon (http://192.168.1.2:8090/open-gate) in deployment.
+    open_gate_url: ${OPEN_GATE_URL:-http://127.0.0.1:8090/open-gate}
+
+    controllers:
+      gate_controller_in:
+        gate: "1"
+        host: ${GATE1_HOST:-192.168.1.204}
+        serial_no: ${GATE1_SERIAL:-441D6491AF17}
+      gate_controller_out:
+        gate: "2"
+        host: ${GATE2_HOST:-192.168.1.205}
+        serial_no: ${GATE2_SERIAL:-441D6491AF18}
+
+    lpr:
+      lpr_in:
+        gate: "1"
+        host: ${LPR_IN_HOST:-192.168.1.130}
+        port: 8090
+        base_url: ${LPR_IN_URL:-http://192.168.1.130:8090}
+        public_url: ${LPR_IN_URL:-http://192.168.1.130:8090}
+        # true if the entry unit answers GET /checklpr; false lets the
+        # orchestrator issue plate-less tickets (as on site).
+        serves_http: true
+      lpr_out:
+        gate: "2"
+        host: ${LPR_OUT_HOST:-192.168.1.149}
+        port: 8090
+        base_url: ${LPR_OUT_URL:-http://192.168.1.149:8090}
+        public_url: ${LPR_OUT_URL:-http://192.168.1.149:8090}
+        serves_http: false
+
+    cameras: {}
 
   # Isolated ports and database for the automated tests.
   e2e:
@@ -81,6 +142,9 @@ environments:
       host: 127.0.0.1
       port: 8900
       base_url: http://127.0.0.1:8900
+
+    open_gate_url: ${OPEN_GATE_URL:-http://127.0.0.1:8090/open-gate}
+
     controllers:
       gate_controller_in:
         gate: "1"
@@ -116,7 +180,10 @@ environments:
     database_url: ${TRAFIX_DB_SITE:-postgresql+psycopg://postgres:postgres@192.168.1.1:5432/Parkways}
 
     broker:
-      host: 192.168.1.1
+      # BROKER_HOST override: when the laptop itself is the broker (docker
+      # mosquitto), reachable from WSL2 only at 127.0.0.1 — mirrored WSL2 never
+      # hairpins the mirrored LAN IP back to Docker Desktop's published port.
+      host: ${BROKER_HOST:-192.168.1.1}
       port: 1883
       keepalive: 30
       username: ${MQTT_USER:-bssparking}
@@ -132,6 +199,10 @@ environments:
       # Env-overridable so a laptop orchestrator can reach a laptop-hosted API
       # during on-site testing instead of the production instance.
       base_url: ${TRAFIX_API_URL:-http://192.168.1.1:8000}
+
+    # The cashier PC (192.168.1.2) hosts the gate-open daemon; the Tauri app
+    # POSTs here after settling. No source available — captured on the wire.
+    open_gate_url: ${OPEN_GATE_URL:-http://192.168.1.2:8090/open-gate}
 
     controllers:
       gate_controller_in:
@@ -161,6 +232,9 @@ environments:
         serves_http: true
       lpr_out:
         gate: "2"
+        # The wire topic uses gate 1 even though the lane is logically gate 2 —
+        # the captured announcements are `gate/out/1/pos` (flow.md §8).
+        pos_topic_gate: "1"
         host: 192.168.1.149
         port: 8090
         base_url: http://192.168.1.149:8090

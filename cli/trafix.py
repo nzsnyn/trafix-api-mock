@@ -349,7 +349,9 @@ def cmd_tail(_args, config) -> None:
         ):
             bus.subscribe(topic, show)
             topics.append(topic)
-        for topic in (gate_status_topic(gate), gate_out_pos_topic(gate)):
+        for topic in (gate_status_topic(gate), gate_out_pos_topic(
+            config.lpr[gate].pos_topic_gate if gate in config.lpr else gate
+        )):
             bus.subscribe_raw(topic, show_raw)
             topics.append(topic)
 
