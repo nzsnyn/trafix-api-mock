@@ -1,4 +1,11 @@
-# Trafix — Python implementation of the LPR parking system
+# Hi there, I'm Nathanael Zamora Satria Nugroho 👋
+
+Full-stack developer (Python, Node.js, TS) | Intern @ PT Cipta Sistem Solusindo | CS Student @ UKSW | Semarang, Indonesia
+
+- 🔭 I’m currently working on web & mobile projects
+- 🌱 I’m learning system design, DevOps, and AI integration
+- 💬 Ask me about Python, FastAPI, Next.js, or TypeScript
+- 📫 Reach me at nathanaelzamora.business@gmail.com
 
 A Python rebuild of the parking system at **Sinode GKJ, Salatiga**, following
 the protocol documented in [`flow.md`](flow.md) — which was reconstructed from
